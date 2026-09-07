@@ -83,14 +83,23 @@
   applyUsage(load());
 
   const act = { tok: null, idle: null, sessions: 0 };
+  // dead-reckoned session %: anchor from the last API reading plus tokens seen since
+  const est = { pct: null, api: null };
+  function applyEstimate(e) {
+    if (!e || typeof e.pct_est !== 'number') return;
+    est.pct = e.pct_est; est.api = e.pct_api;
+    if (session && e.calibrated) sessionPct = Math.round(e.pct_est);
+  }
   function applyActivity(a) {
     if (!a || typeof a.tok_per_min !== 'number') return;
     act.tok = a.tok_per_min; act.idle = a.idle_s; act.sessions = a.sessions || 0;
+    if (a.estimate) applyEstimate(a.estimate);
   }
-  applyActivity(D.activity);
+  applyActivity(D.activity); applyEstimate(D.estimate);
+  const estimating = () => est.pct !== null && est.api !== null && Math.round(est.pct) !== Math.round(est.api);
   const THEME = (location.search.match(/theme=(\w+)/) || [])[1] || D.theme || 'crt';
   window.pulse = { activity: applyActivity, usage: p => {
-    applyUsage(p); applyActivity(p && p.activity);
+    applyUsage(p); applyActivity(p && p.activity); applyEstimate(p && p.estimate);
     if (p && p.theme && p.theme !== THEME && !location.search) {       // theme changed from the menu: reload into it
       location.hash = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(D))));
       location.reload();
@@ -108,7 +117,7 @@
   const short = s => s < 60 ? s + 'S' : s < 3600 ? Math.floor(s / 60) + 'M' : s < 86400 ? Math.floor(s / 3600) + 'H' : Math.floor(s / 86400) + 'D';
   const fmtK = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
   const resetMs = w => { const r = w && w.resets ? Date.parse(w.resets) : NaN; return isNaN(r) ? NaN : r - Date.now(); };
-  const resetText = w => { const m = resetMs(w); return isNaN(m) ? 'RESET ?' : 'RESET ' + span(m); };
+  const resetText = w => { const m = resetMs(w); return (isNaN(m) ? 'RESET ?' : 'RESET ' + span(m)) + (w === session && estimating() ? ' · EST' : ''); };
   const ageSec = () => Math.max(0, Math.floor(Date.now() / 1000 - D.fetched));
   const fresh = () => alive && !D.status && ageSec() < 120;
   function nextReset() {

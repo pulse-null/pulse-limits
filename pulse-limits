@@ -13,20 +13,21 @@
 #   pulse-limits raw           print the last raw usage reply from the API (no secrets in it)
 #   pulse-limits keychain NAME pin the Keychain entry that holds the claude.ai login (see doctor)
 #
-# Works from a git checkout (this file next to pulse-limits.5m.sh) and from a
+# Works from a git checkout (this file next to pulse-limits.1m.sh) and from a
 # Homebrew install (bin/pulse-limits with the plugin under opt/pulse-limits/libexec,
 # a path that stays valid across `brew upgrade`).
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-if   [[ -f "$HERE/pulse-limits.5m.sh" ]]; then LIB="$HERE"
-elif [[ -f "$HERE/../opt/pulse-limits/libexec/pulse-limits.5m.sh" ]]; then LIB=$(cd "$HERE/../opt/pulse-limits/libexec" && pwd)
+if   [[ -f "$HERE/pulse-limits.1m.sh" ]]; then LIB="$HERE"
+elif [[ -f "$HERE/../opt/pulse-limits/libexec/pulse-limits.1m.sh" ]]; then LIB=$(cd "$HERE/../opt/pulse-limits/libexec" && pwd)
 else
   REAL=$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")
-  [[ -f "$REAL/../libexec/pulse-limits.5m.sh" ]] && LIB=$(cd "$REAL/../libexec" && pwd) || { echo "pulse-limits: cannot find pulse-limits.5m.sh" >&2; exit 1; }
+  [[ -f "$REAL/../libexec/pulse-limits.1m.sh" ]] && LIB=$(cd "$REAL/../libexec" && pwd) || { echo "pulse-limits: cannot find pulse-limits.1m.sh" >&2; exit 1; }
 fi
-PLUGIN="pulse-limits.5m.sh"
+PLUGIN="pulse-limits.1m.sh"
+OLD_PLUGIN="pulse-limits.5m.sh"   # pre-0.4 installs linked this name
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pulse-limits"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pulse-limits"
 plugin_dir() { local d; d=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true); printf '%s' "${d:-$HOME/.config/swiftbar/plugins}"; }
@@ -39,6 +40,7 @@ case "${1:-help}" in
     [[ -x "$LIB/bin/pulse-popover" && -x "$LIB/bin/pulse-menubar" ]] || (cd "$LIB" && ./build.sh)
     d=$(plugin_dir); mkdir -p "$d"
     defaults write com.ameba.SwiftBar PluginDirectory "$d"
+    rm -f "$d/$OLD_PLUGIN"
     ln -sfn "$LIB/$PLUGIN" "$d/$PLUGIN"
     security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
       || echo "warning: no Claude Code login in the Keychain. Run 'claude' once and log in; the widget reads that token." >&2
@@ -48,7 +50,7 @@ case "${1:-help}" in
     echo "Look for the ring at the right of the menu bar. Left-click opens the monitor, right-click picks a theme." ;;
   uninstall)
     pkill -f bin/pulse-popover 2>/dev/null || true
-    rm -f "$(plugin_dir)/$PLUGIN"; rm -rf "$CACHE_DIR" "$CONFIG_DIR"; refresh
+    rm -f "$(plugin_dir)/$PLUGIN" "$(plugin_dir)/$OLD_PLUGIN"; rm -rf "$CACHE_DIR" "$CONFIG_DIR"; refresh
     echo "unlinked. SwiftBar itself is untouched." ;;
   theme)   "$LIB/$PLUGIN" --theme "${2:-}" && refresh && echo "theme: ${2}" ;;
   refresh) "$LIB/$PLUGIN" --reset; refresh; echo "refreshing" ;;
@@ -61,7 +63,7 @@ case "${1:-help}" in
     readlink -f / >/dev/null 2>&1 && ok "readlink -f works" || bad "readlink -f unsupported (macOS older than 12.3): symlinked plugin will not find its files"
     for tool in jq curl security; do command -v "$tool" >/dev/null && ok "$tool: $(command -v "$tool")" || bad "$tool is missing"; done
     echo "files"; ok "lib: $LIB"
-    for f in pulse-limits.5m.sh open-monitor.sh panel.html bin/pulse-popover bin/pulse-menubar; do [[ -e "$LIB/$f" ]] && ok "$f" || bad "$f missing (run ./build.sh for bin/*)"; done
+    for f in pulse-limits.1m.sh open-monitor.sh panel.html bin/pulse-popover bin/pulse-menubar; do [[ -e "$LIB/$f" ]] && ok "$f" || bad "$f missing (run ./build.sh for bin/*)"; done
     echo "swiftbar"
     [[ -d /Applications/SwiftBar.app ]] && ok "SwiftBar $(defaults read /Applications/SwiftBar.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null) installed" || bad "SwiftBar not in /Applications"
     pgrep -xq SwiftBar && ok "SwiftBar running" || bad "SwiftBar not running (open -a SwiftBar)"
@@ -149,7 +151,7 @@ case "${1:-help}" in
     fi
     pkill -f bin/pulse-popover 2>/dev/null || true
     rm -f "$CACHE_DIR/popover.pid" "$CACHE_DIR/popover.closed"
-    refresh
+    "$0" install >/dev/null                       # relink in case the plugin file name changed
     after=$("$0" version)
     if [[ "$before" == "$after" ]]; then echo "already up to date: $after"; else echo "updated: $before -> $after"; fi ;;
   -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;

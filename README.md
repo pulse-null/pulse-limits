@@ -38,8 +38,12 @@ Green, amber from 60 %, red from 85 %.
 - **The other windows** as rings: the week, plus any per-model weekly cap your
   plan carries.
 - **A 12-hour trend** of the session window, so you can see when you burned it.
-- **Live while open.** The panel refreshes every two minutes as long as it is
-  on screen and says `● LIVE` when the reading is under two minutes old.
+- **Live between readings.** The API is asked once every five minutes; in
+  between, the session number is dead-reckoned from the tokens Claude Code
+  produced since the last reading, using a rate calibrated from the previous
+  readings. The menu bar updates every minute, the panel every few seconds
+  while open. While the number is dead-reckoned the caption says `· EST`; it
+  snaps to the real value at each reading.
 - **Honest when it cannot know.** Stale data turns amber and says how old it is.
   No data is a flat line with `NO SIGNAL`.
 
@@ -123,6 +127,12 @@ Everything is a Bash script, one HTML file, and two tiny Swift programs.
    The helper sums the output tokens of assistant lines stamped in the last
    minute, deduplicated by message id because a streaming reply is written
    several times, and notes when any transcript was last touched. About 30 ms.
+   The same accounting drives the **dead reckoning**: each API reading is an
+   anchor, the tokens produced between two anchors calibrate a rate in
+   percent per output token (smoothed across readings, kept in
+   `~/.cache/pulse-limits/calib.json`), and between readings the session
+   number is anchor plus rate times tokens since. Uncalibrated until two
+   readings with activity between them have been seen.
 4. **The page.** The script packs the numbers as base64 JSON into the URL
    fragment of `panel.html`. The page reads it, draws everything on a canvas,
    and animates the trace. Countdowns tick in the page.
@@ -188,10 +198,10 @@ Common causes:
 
 ## Tuning
 
-Top of `pulse-limits.5m.sh`: the live-call throttle, trend depth, popover size.
+Top of `pulse-limits.1m.sh`: the live-call throttle, trend depth, popover size.
 In `panel.html`: each theme's palette, the tone thresholds (60 % amber, 85 % red),
 the BPM mapping in `bpmNow()`, and the ECG shape (a sum of five gaussians: P, Q,
-R, S, T). Rename the script to change the cadence (`pulse-limits.2m.sh`).
+R, S, T).
 
 Preview a theme without SwiftBar:
 

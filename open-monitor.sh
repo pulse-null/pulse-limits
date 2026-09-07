@@ -7,7 +7,7 @@ SELF=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
 HERE=$(dirname "$SELF")
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pulse-limits"
 BIN="$HERE/bin/pulse-popover"
-URLFILE="$CACHE_DIR/panel.url"      # written by pulse-limits.5m.sh on every run
+URLFILE="$CACHE_DIR/panel.url"      # written by pulse-limits.1m.sh on every run
 PIDFILE="$CACHE_DIR/popover.pid"    # written by the helper itself
 STAMP="$CACHE_DIR/popover.closed"   # written by the helper when it hides
 W=520; H=316

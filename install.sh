@@ -13,7 +13,8 @@
 set -euo pipefail
 
 REPO="${PULSE_LIMITS_REPO:-https://github.com/dnacenta/pulse-limits.git}"
-PLUGIN="pulse-limits.5m.sh"
+PLUGIN="pulse-limits.1m.sh"
+OLD_PLUGIN="pulse-limits.5m.sh"
 PLUGIN_DIR_DEFAULT="$HOME/.config/swiftbar/plugins"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pulse-limits"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pulse-limits"
@@ -43,7 +44,7 @@ resolve_dir() {
 if [[ "${1:-}" == "--uninstall" ]]; then
   say "Uninstalling"
   pkill -f bin/pulse-popover 2>/dev/null || true
-  rm -f "$(plugin_dir)/$PLUGIN"
+  rm -f "$(plugin_dir)/$PLUGIN" "$(plugin_dir)/$OLD_PLUGIN"
   rm -rf "$CACHE_DIR" "$CONFIG_DIR"
   d=$(resolve_dir)
   if [[ "$d" == "$HOME/.local/share/pulse-limits" && -d "$d" ]]; then rm -rf "$d"; say "Removed $d"; else say "Kept your checkout at $d"; fi
@@ -83,6 +84,7 @@ say "Building the helpers"
 PD=$(plugin_dir)
 mkdir -p "$PD"
 defaults write com.ameba.SwiftBar PluginDirectory "$PD"
+rm -f "$PD/$OLD_PLUGIN"
 ln -sfn "$DIR/$PLUGIN" "$PD/$PLUGIN"
 chmod +x "$DIR/$PLUGIN" "$DIR/open-monitor.sh"
 say "Linked $PD/$PLUGIN"

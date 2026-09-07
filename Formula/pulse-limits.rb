@@ -1,8 +1,8 @@
 class PulseLimits < Formula
   desc "Claude plan limits in the menu bar, as a retro patient monitor (SwiftBar)"
   homepage "https://github.com/dnacenta/pulse-limits"
-  url "https://github.com/dnacenta/pulse-limits/archive/refs/tags/v0.3.7.tar.gz"
-  sha256 "026f1f5f25779725d697e8e5319fc35cd58b3d634aeeaeab74be89b75c5c5f6a"
+  url "https://github.com/dnacenta/pulse-limits/archive/refs/tags/v0.4.0.tar.gz"
+  sha256 "SHA256_OF_THE_TAG_TARBALL"
   license "AGPL-3.0-or-later"
 
   depends_on "jq"
@@ -12,7 +12,7 @@ class PulseLimits < Formula
     # Homebrew already requires the Command Line Tools, which ship swiftc.
     system "swiftc", "-O", "popover/PulsePopover.swift", "-o", "pulse-popover"
     system "swiftc", "-O", "menubar/MenuBarImage.swift", "-o", "pulse-menubar"
-    libexec.install "pulse-limits.5m.sh", "open-monitor.sh", "panel.html", "build.sh"
+    libexec.install "pulse-limits.1m.sh", "pulse-limits.5m.sh", "open-monitor.sh", "panel.html", "build.sh"
     (libexec/"bin").install "pulse-popover", "pulse-menubar"
     bin.install "pulse-limits"
   end
@@ -28,7 +28,7 @@ class PulseLimits < Formula
   end
 
   test do
-    output = shell_output("#{libexec}/pulse-limits.5m.sh --theme nope 2>&1", 64)
+    output = shell_output("#{libexec}/pulse-limits.1m.sh --theme nope 2>&1", 64)
     assert_match "unknown theme", output
     assert_match "install", shell_output("#{bin}/pulse-limits help")
   end
