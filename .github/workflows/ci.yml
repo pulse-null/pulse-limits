@@ -26,8 +26,14 @@ jobs:
         if: runner.os == 'macOS'
         run: ./build.sh
 
+  # Both runners upload to Coveralls; the 90% floor is checked on macOS, the only runner
+  # that reaches the Keychain and SwiftBar code for real.
   coverage:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,7 +41,19 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
-      - run: cargo llvm-cov --lcov --output-path lcov.info
+      - run: cargo llvm-cov --release --lcov --output-path lcov.info ${{ runner.os == 'macOS' && '--fail-under-lines 90' || '' }}
       - uses: coverallsapp/github-action@v2
         with:
           file: lcov.info
+          flag-name: ${{ matrix.os }}
+          parallel: true
+
+  coverage-finish:
+    needs: coverage
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: coverallsapp/github-action@v2
+        with:
+          parallel-finished: true
+          carryforward: "ubuntu-latest,macos-latest"
