@@ -57,11 +57,7 @@ pub fn render(b: &Built, lib: &Path) -> String {
     let (status, hint, plan) = (b.str("status"), b.str("hint"), b.str("plan"));
 
     // menu bar line: "10%" then a ring that fills with it, like the battery item
-    let (mut label, mut tcolor, ring) = if b.have_data {
-        (format!("{}%", b.s_pct), color(tone(b.s_pct)), b.s_pct)
-    } else {
-        ("--".to_string(), C_RED, 0)
-    };
+    let (mut label, mut tcolor, ring) = if b.have_data { (format!("{}%", b.s_pct), color(tone(b.s_pct)), b.s_pct) } else { ("--".to_string(), C_RED, 0) };
     if b.have_data && !status.is_empty() {
         label.push('!');
         tcolor = C_RED;
@@ -71,7 +67,9 @@ pub fn render(b: &Built, lib: &Path) -> String {
     if is_executable(&menubar) {
         // one PNG per menu bar appearance: text and arc in the tone colour, a neutral track
         let (light, dark) = tcolor.split_once(',').unwrap_or((tcolor, tcolor));
-        if let (Some((w, h, l)), Some((_, _, d))) = (menubar_image(&menubar, ring, &label, light, "#c9ced2"), menubar_image(&menubar, ring, &label, dark, "#3a4044")) {
+        if let (Some((w, h, l)), Some((_, _, d))) =
+            (menubar_image(&menubar, ring, &label, light, "#c9ced2"), menubar_image(&menubar, ring, &label, dark, "#3a4044"))
+        {
             title = String::new();
             img = format!("image={l},{d} width={w} height={h}");
         }
@@ -97,11 +95,19 @@ pub fn render(b: &Built, lib: &Path) -> String {
     line(&mut out, "FORCE REFRESH", &format!("{MONO} color={C_GREEN} alternate=true bash={bin} param1=reset terminal=false refresh=true"));
     line(&mut out, &format!("THEME  ·  {}", upper(&b.theme)), &format!("{MONO} color={C_DIM}"));
     for th in THEMES {
-        line(&mut out, &format!("--{}", upper(th)), &format!("{MONO} color={C_GREEN} checked={} bash={bin} param1=theme param2={th} terminal=false refresh=true", th == b.theme));
+        line(
+            &mut out,
+            &format!("--{}", upper(th)),
+            &format!("{MONO} color={C_GREEN} checked={} bash={bin} param1=theme param2={th} terminal=false refresh=true", th == b.theme),
+        );
     }
     line(&mut out, "PROVIDERS", &format!("{MONO} color={C_DIM}"));
     for p in KNOWN {
-        line(&mut out, &format!("--{}", upper(p)), &format!("{MONO} color={C_GREEN} checked={} bash={bin} param1=provider param2={p} terminal=false refresh=true", b.enabled.iter().any(|e| e == p)));
+        line(
+            &mut out,
+            &format!("--{}", upper(p)),
+            &format!("{MONO} color={C_GREEN} checked={} bash={bin} param1=provider param2={p} terminal=false refresh=true", b.enabled.iter().any(|e| e == p)),
+        );
     }
     if n_enabled == 0 {
         line(&mut out, &format!("?{status}  ERROR"), &format!("{MONO} color={C_RED}"));
@@ -165,7 +171,10 @@ mod tests {
             credits: Value::Null,
             history: vec![],
         };
-        let docs = vec![mk("claude", "", "", vec![("SESSION", json!(13)), ("WEEK", json!(9.4))]), mk("codex", "NO LOGIN", "NO CODEX LOGIN ON THIS MAC. RUN: codex login", vec![])];
+        let docs = vec![
+            mk("claude", "", "", vec![("SESSION", json!(13)), ("WEEK", json!(9.4))]),
+            mk("codex", "NO LOGIN", "NO CODEX LOGIN ON THIS MAC. RUN: codex login", vec![]),
+        ];
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", Value::Null);
         let text = render(&b, &lib);
         let bin = lib.join("bin/pulse-limits").display().to_string();
@@ -206,7 +215,9 @@ NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false col
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let text = render(&b, &lib);
         assert!(text.starts_with("● -- | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
-        assert!(text.contains("\n?NO PROVIDER  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nENABLE ONE: pulse-limits provider grok, claude or codex | "));
+        assert!(text.contains(
+            "\n?NO PROVIDER  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nENABLE ONE: pulse-limits provider grok, claude or codex | "
+        ));
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }
 }

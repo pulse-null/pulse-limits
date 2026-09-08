@@ -132,7 +132,10 @@ mod tests {
         let docs = vec![doc("claude", vec![("SESSION", json!(13)), ("WEEK", json!(17))]), doc("codex", vec![("SESSION", json!(17.0))])];
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", json!({"tok_per_min": 0, "idle_s": 5, "sessions": 0}));
         let keys: Vec<&str> = b.payload.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["provider", "plan", "source", "theme", "fetched", "history", "activity", "status", "hint", "windows", "credits", "providers", "estimate"]);
+        assert_eq!(
+            keys,
+            ["provider", "plan", "source", "theme", "fetched", "history", "activity", "status", "hint", "windows", "credits", "providers", "estimate"]
+        );
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 2);
         assert_eq!(b.payload["providers"][1]["name"], "codex");
         assert_eq!(b.payload["providers"][1]["windows"][0]["pct"].to_string(), "17.0");

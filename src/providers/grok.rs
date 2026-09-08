@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 
 use crate::providers::codex::jwt_claims;
 use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
-use crate::util::{cache_dir, env_path, epoch_of, hhmmss, home, is_executable, is_macos, iso_utc, local_offset, mtime, read_trimmed, upper, which, write_atomic};
+use crate::util::{
+    cache_dir, env_path, epoch_of, hhmmss, home, is_executable, is_macos, iso_utc, local_offset, mtime, read_trimmed, upper, which, write_atomic,
+};
 
 pub const BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 pub const TOKEN_AUTH: &str = "xai-grok-cli"; // X-XAI-Token-Auth: "validate as a CLI session token"
@@ -517,7 +519,11 @@ mod tests {
         // 4. an API key or a cookie jar in the key slot
         for key in ["xai-notARealKey000", "sso=abc; sso-rw=def", "a=b; c=d"] {
             let a = read_auth(&auth_file(&d, &format!(r#"{{"https://auth.x.ai::c": {{"key": "{key}", "expires_at": "2099-01-01T00:00:00Z"}}}}"#)), now);
-            assert_eq!((a.status.as_str(), a.hint.as_str(), a.token.as_str()), ("NO PLAN ACCESS", "GROK IS LOGGED IN WITH AN API KEY, NOT A SUBSCRIPTION. RUN: grok login", ""), "{key}");
+            assert_eq!(
+                (a.status.as_str(), a.hint.as_str(), a.token.as_str()),
+                ("NO PLAN ACCESS", "GROK IS LOGGED IN WITH AN API KEY, NOT A SUBSCRIPTION. RUN: grok login", ""),
+                "{key}"
+            );
         }
         // 5. the fixture: an OIDC login with 6 h left
         let a = read_auth(&auth_file(&d, AUTH), now);
@@ -529,8 +535,17 @@ mod tests {
         assert!(!read_auth(&auth_file(&d, AUTH), EXPIRES - EARLY_SECS - 1).token.is_empty());
         assert_eq!(read_auth(&auth_file(&d, AUTH), EXPIRES + 86400).status, "TOKEN EXPIRED");
         // 7. the legacy session scope, with the +00:00 stamp form
-        let a = read_auth(&auth_file(&d, r#"{"https://accounts.x.ai/sign-in": {"key": "legacy-session-key", "expires_at": "2026-09-08T20:20:55.031303+00:00", "principal_type": "Team"}}"#), now);
-        assert_eq!((a.status.as_str(), a.kind.as_str(), a.principal.as_str(), a.expires, a.has_refresh, a.token.as_str()), ("", "legacy", "Team", EXPIRES, false, "legacy-session-key"));
+        let a = read_auth(
+            &auth_file(
+                &d,
+                r#"{"https://accounts.x.ai/sign-in": {"key": "legacy-session-key", "expires_at": "2026-09-08T20:20:55.031303+00:00", "principal_type": "Team"}}"#,
+            ),
+            now,
+        );
+        assert_eq!(
+            (a.status.as_str(), a.kind.as_str(), a.principal.as_str(), a.expires, a.has_refresh, a.token.as_str()),
+            ("", "legacy", "Team", EXPIRES, false, "legacy-session-key")
+        );
         // 8. no expires_at: the JWT's exp claim (one second before the file's stamp); neither: call and let the server say
         let a = read_auth(&auth_file(&d, &format!(r#"{{"https://auth.x.ai::c": {{"key": "{}"}}}}"#, fixture_key())), now);
         assert_eq!((a.status.as_str(), a.expires), ("", EXPIRES - 1));
@@ -538,7 +553,8 @@ mod tests {
         let a = read_auth(&auth_file(&d, r#"{"https://auth.x.ai::c": {"key": "opaque-token"}}"#), now);
         assert_eq!((a.status.as_str(), a.expires, a.token.as_str()), ("", 0, "opaque-token"));
         // 9. preference: OIDC over legacy over an SSO issuer; an SSO issuer alone is accepted
-        let both = r#"{"https://accounts.x.ai/sign-in": {"key": "old"}, "https://sso.example.com::cid": {"key": "sso"}, "https://auth.x.ai::cid": {"key": "new"}}"#;
+        let both =
+            r#"{"https://accounts.x.ai/sign-in": {"key": "old"}, "https://sso.example.com::cid": {"key": "sso"}, "https://auth.x.ai::cid": {"key": "new"}}"#;
         assert_eq!(read_auth(&auth_file(&d, both), now).token, "new");
         let a = read_auth(&auth_file(&d, r#"{"https://sso.example.com::cid": {"key": "sso"}, "https://accounts.x.ai/sign-in": {"key": "old"}}"#), now);
         assert_eq!((a.token.as_str(), a.kind.as_str()), ("old", "legacy"));
@@ -554,13 +570,16 @@ mod tests {
         let w = windows(&c, CAPTURED);
         assert_eq!(rows(&w), vec![("WEEK".into(), "1.0".into(), Some(RESET.into()))]);
         assert_eq!(w[0].pct, json!(1.0)); // as the reply wrote it
-        // one product mirroring the pool and an on-demand cap of 0 add nothing
+                                          // one product mirroring the pool and an on-demand cap of 0 add nothing
         assert_eq!(w.len(), 1);
         // the percent is explicit, so the window stays after the period (the cache is stale, not empty)
         assert_eq!(windows(&c, PERIOD_END + 3600).len(), 1);
         assert_eq!(plan_of_reply(&c), "");
         assert_eq!(plan_of_settings(&v(SETTINGS)), "X PREMIUM+");
-        assert_eq!(v(DENIED)["body"]["error"].as_str().unwrap(), "Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=PermissionDenied, reason=no auth context)");
+        assert_eq!(
+            v(DENIED)["body"]["error"].as_str().unwrap(),
+            "Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=PermissionDenied, reason=no auth context)"
+        );
     }
 
     #[test]
@@ -570,7 +589,7 @@ mod tests {
         let w = windows(&c, CAPTURED);
         assert_eq!(rows(&w), vec![("WEEK".into(), "0".into(), Some(RESET.into()))]);
         assert_eq!(rows(&windows(&c, PERIOD_START)), rows(&w)); // the first second of the period counts
-        // outside the period a missing percent is unknown, not 0
+                                                                // outside the period a missing percent is unknown, not 0
         assert!(windows(&c, PERIOD_END).is_empty());
         assert!(windows(&c, PERIOD_START - 1).is_empty());
     }
@@ -596,7 +615,15 @@ mod tests {
         let c = v(r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-14T17:30:18Z"},
             "creditUsagePercent":120,"onDemandCap":{"val":100},"onDemandUsed":{"val":150},
             "productUsage":[{"product":"GrokBuild","usagePercent":-3}, "junk", {"usagePercent":7}]}}"#);
-        assert_eq!(rows(&windows(&c, CAPTURED)), vec![("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())), ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())), ("BUILD".into(), "0".into(), Some("2026-09-14T17:30:18Z".into())), ("PRODUCT".into(), "7".into(), Some("2026-09-14T17:30:18Z".into()))]);
+        assert_eq!(
+            rows(&windows(&c, CAPTURED)),
+            vec![
+                ("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())),
+                ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())),
+                ("BUILD".into(), "0".into(), Some("2026-09-14T17:30:18Z".into())),
+                ("PRODUCT".into(), "7".into(), Some("2026-09-14T17:30:18Z".into()))
+            ]
+        );
         // no type: the label from the span; both stamp forms parse to the same instant
         let c = v(r#"{"config":{"currentPeriod":{"start":"2026-09-07T17:30:18.071364+00:00","end":"2026-09-14T17:30:18Z"},"creditUsagePercent":5}}"#);
         assert_eq!(rows(&windows(&c, CAPTURED)), vec![("WEEK".into(), "5".into(), Some("2026-09-14T17:30:18Z".into()))]);
@@ -649,7 +676,7 @@ mod tests {
         let d = st.emit("X PREMIUM+", windows(&st.cached().unwrap(), CAPTURED), Value::Null);
         assert_eq!((d.plan.as_str(), d.windows.len(), d.history), ("X PREMIUM+", 1, vec![(st.now, 1)]));
         assert_eq!(std::fs::read_to_string(&st.history).unwrap(), format!("{}\t1\t1\n", st.now)); // WEEK is both the bar's number and the week column
-        // 401 with the body the proxy really sends; the last good reply stays
+                                                                                                  // 401 with the body the proxy really sends; the last good reply stays
         let mut st = Store::new("grok");
         st.cache_age = 1000;
         fetch(&mut st, &serve(401, denied_body()), "tok");
@@ -748,7 +775,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(s.cache().join("plan-grok")).unwrap(), "X PREMIUM+\n");
         // the plan from a billing reply fills in when settings named none
         std::fs::write(s.cache().join("plan-grok"), "\n").unwrap();
-        std::fs::write(s.cache().join("usage-grok.json"), r#"{"config":{"subscriptionTier":"supergrok","creditUsagePercent":3,"billingPeriodEnd":"2099-01-08T00:00:00Z"}}"#).unwrap();
+        std::fs::write(
+            s.cache().join("usage-grok.json"),
+            r#"{"config":{"subscriptionTier":"supergrok","creditUsagePercent":3,"billingPeriodEnd":"2099-01-08T00:00:00Z"}}"#,
+        )
+        .unwrap();
         let d = run(270);
         assert_eq!((d.source.as_str(), d.plan.as_str(), d.windows[0].pct.to_string().as_str()), ("CACHE", "SUPERGROK", "3"));
         drop(env);

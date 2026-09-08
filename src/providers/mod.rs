@@ -221,7 +221,12 @@ impl Store {
         let _ = fs::create_dir_all(&dir);
         // Installs from before the providers split kept Claude's files without a suffix: adopt them once.
         if name == "claude" {
-            for (old, new) in [("usage.json", "usage-claude.json"), ("last-reply.json", "last-reply-claude.json"), ("backoff", "backoff-claude"), ("history.tsv", "history-claude.tsv")] {
+            for (old, new) in [
+                ("usage.json", "usage-claude.json"),
+                ("last-reply.json", "last-reply-claude.json"),
+                ("backoff", "backoff-claude"),
+                ("history.tsv", "history-claude.tsv"),
+            ] {
                 if dir.join(old).is_file() && !dir.join(new).exists() {
                     let _ = fs::rename(dir.join(old), dir.join(new));
                 }
@@ -321,7 +326,11 @@ impl Store {
     /// The document, from status/hint/source and the windows read from the last good reply.
     pub fn emit(&mut self, plan: &str, windows: Vec<Window>, credits: Value) -> Doc {
         let fetched = if self.cache.is_file() {
-            if self.cache_age == 0 { self.now } else { mtime(&self.cache).unwrap_or(self.now) }
+            if self.cache_age == 0 {
+                self.now
+            } else {
+                mtime(&self.cache).unwrap_or(self.now)
+            }
         } else {
             self.source.clear();
             0
@@ -335,7 +344,11 @@ impl Store {
         }
         let empty = windows.is_empty();
         let status = if empty && self.status.is_empty() {
-            if self.source.is_empty() { "NO DATA".to_string() } else { "NO LIMITS IN REPLY".to_string() }
+            if self.source.is_empty() {
+                "NO DATA".to_string()
+            } else {
+                "NO LIMITS IN REPLY".to_string()
+            }
         } else {
             self.status.clone()
         };
@@ -344,7 +357,17 @@ impl Store {
         } else {
             self.hint.clone()
         };
-        Doc { provider: self.name.clone(), plan: plan.into(), source: self.source.clone(), fetched, status, hint, windows, credits, history: self.history_rows() }
+        Doc {
+            provider: self.name.clone(),
+            plan: plan.into(),
+            source: self.source.clone(),
+            fetched,
+            status,
+            hint,
+            windows,
+            credits,
+            history: self.history_rows(),
+        }
     }
 
     /// Doctor lines about the last attempt and the cached reply.
@@ -352,7 +375,9 @@ impl Store {
         if let Some(v) = fs::read(&self.last_reply).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
             let body = v.get("body").cloned().unwrap_or(Value::Null);
             let body_digest = match &body {
-                Value::Object(m) => json!({ "keys": m.keys().cloned().collect::<Vec<_>>().join(","), "error": body.get("error").cloned().unwrap_or(Value::Null) }),
+                Value::Object(m) => {
+                    json!({ "keys": m.keys().cloned().collect::<Vec<_>>().join(","), "error": body.get("error").cloned().unwrap_or(Value::Null) })
+                }
                 other => Value::String(other.to_string().chars().take(200).collect()),
             };
             let at = v.get("at").and_then(Value::as_i64).map(crate::util::iso_utc).unwrap_or_default();
@@ -368,11 +393,7 @@ impl Store {
 
 /// One GET with a 15 s deadline. 0 means no answer (refused, timed out, no DNS, no TLS).
 pub fn http_get(url: &str, headers: &[(&str, &str)]) -> (u16, Vec<u8>) {
-    let cfg = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(15)))
-        .user_agent("pulse-limits")
-        .build();
+    let cfg = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(15))).user_agent("pulse-limits").build();
     let agent = ureq::Agent::new_with_config(cfg);
     let mut req = agent.get(url);
     for (k, v) in headers {
@@ -478,7 +499,10 @@ mod tests {
         assert!(st.backing_off());
         // no windows, cached reply -> NO LIMITS IN REPLY
         let d = st.emit("P", vec![], Value::Null);
-        assert_eq!((d.status.as_str(), d.hint.as_str(), d.source.as_str()), ("NO LIMITS IN REPLY", "THE USAGE REPLY HAD NO WINDOWS. RUN: pulse-limits doctor", "CACHE"));
+        assert_eq!(
+            (d.status.as_str(), d.hint.as_str(), d.source.as_str()),
+            ("NO LIMITS IN REPLY", "THE USAGE REPLY HAD NO WINDOWS. RUN: pulse-limits doctor", "CACHE")
+        );
         // a live accept writes the trend and prunes the old row
         let w = vec![Window { label: "SESSION".into(), pct: json!(12.6), resets: None }, Window { label: "WEEK".into(), pct: json!(3), resets: None }];
         st.accept(b"{}");

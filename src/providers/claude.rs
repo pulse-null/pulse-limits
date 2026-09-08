@@ -33,7 +33,11 @@ pub fn login_of(creds: &Value) -> Login {
 pub fn plan_label(login: Option<&Login>) -> String {
     let (plan, tier) = login.map(|l| (l.plan.as_str(), l.tier.as_str())).unwrap_or(("?", "?"));
     if tier == "?" {
-        if plan == "?" { String::new() } else { upper(plan) }
+        if plan == "?" {
+            String::new()
+        } else {
+            upper(plan)
+        }
     } else {
         upper(&tier.strip_prefix("default_claude_").unwrap_or(tier).replace('_', " "))
     }
@@ -173,7 +177,13 @@ pub fn doctor(pstatus: &str) {
                     Some(v) if keychain::has_login(&v) => {
                         let o = &v["claudeAiOauth"];
                         let expires = o.get("expiresAt").and_then(Value::as_f64).map(|ms| iso_utc((ms / 1000.0) as i64)).unwrap_or_else(|| "?".into());
-                        ok(&format!("Keychain '{}' / account '{}'{mdat}: claude.ai login, plan {}, tier {}, expires {expires}", it.service, it.account, str_or(o.get("subscriptionType"), "?"), str_or(o.get("rateLimitTier"), "?")));
+                        ok(&format!(
+                            "Keychain '{}' / account '{}'{mdat}: claude.ai login, plan {}, tier {}, expires {expires}",
+                            it.service,
+                            it.account,
+                            str_or(o.get("subscriptionType"), "?"),
+                            str_or(o.get("rateLimitTier"), "?")
+                        ));
                         if tok.is_empty() {
                             tok = o["accessToken"].as_str().unwrap_or("").to_string();
                         }
@@ -182,7 +192,12 @@ pub fn doctor(pstatus: &str) {
                         let keys = v.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
                         bad(&format!("Keychain '{}' / account '{}'{mdat}: no claude.ai login in it (keys: {keys})", it.service, it.account));
                     }
-                    None => bad(&format!("Keychain '{}' / account '{}'{mdat}: no claude.ai login in it (keys: not JSON, {} chars)", it.service, it.account, json.chars().count())),
+                    None => bad(&format!(
+                        "Keychain '{}' / account '{}'{mdat}: no claude.ai login in it (keys: not JSON, {} chars)",
+                        it.service,
+                        it.account,
+                        json.chars().count()
+                    )),
                 },
                 None => bad(&format!("Keychain '{}' / account '{}': listed but not readable from here", it.service, it.account)),
             }
@@ -240,7 +255,11 @@ pub fn doctor(pstatus: &str) {
     }
     println!("  last reply (shape digest)");
     st.doctor_digests(|c| {
-        let limits: Vec<Value> = c.get("limits").and_then(Value::as_array).map(|a| a.iter().map(|l| json!({ "kind": l["kind"], "percent": l["percent"], "model": l["scope"]["model"]["display_name"] })).collect()).unwrap_or_default();
+        let limits: Vec<Value> = c
+            .get("limits")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(|l| json!({ "kind": l["kind"], "percent": l["percent"], "model": l["scope"]["model"]["display_name"] })).collect())
+            .unwrap_or_default();
         json!({ "keys": c.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default(),
                 "five_hour": c["five_hour"]["utilization"], "seven_day": c["seven_day"]["utilization"], "limits": limits })
     });

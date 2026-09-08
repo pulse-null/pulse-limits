@@ -127,7 +127,10 @@ mod tests {
         let b = assemble(vec![stale], vec!["claude".into()], "claude", "crt", json!({ "tok_per_min": 0, "idle_s": 125, "sessions": 0 }));
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert_eq!((v["text"].as_str(), v["class"].as_str()), (Some("17%!"), Some("stale")));
-        assert!(v["tooltip"].as_str().unwrap().ends_with("\nIDLE 2M\nUPDATED 45S AGO · CACHE\n? TOKEN EXPIRED\nOPEN CLAUDE CODE ONCE, IT REFRESHES THE TOKEN"));
+        assert!(v["tooltip"]
+            .as_str()
+            .unwrap()
+            .ends_with("\nIDLE 2M\nUPDATED 45S AGO · CACHE\n? TOKEN EXPIRED\nOPEN CLAUDE CODE ONCE, IT REFRESHES THE TOKEN"));
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert_eq!((v["text"].as_str(), v["class"].as_str(), v["percentage"].as_i64()), (Some("--"), Some("dead"), Some(0)));

@@ -48,7 +48,13 @@ pub fn output_tokens(root: &Path, from: f64, to: f64) -> i64 {
         t += 60.0;
     }
     let span = to - from;
-    let tail: u64 = if span <= 120.0 { 131_072 } else if span <= 900.0 { 1_048_576 } else { 4_194_304 };
+    let tail: u64 = if span <= 120.0 {
+        131_072
+    } else if span <= 900.0 {
+        1_048_576
+    } else {
+        4_194_304
+    };
     for (path, mtime) in transcripts(root) {
         if mtime < from {
             continue;
@@ -78,7 +84,9 @@ pub fn output_tokens(root: &Path, from: f64, to: f64) -> i64 {
                 continue;
             }
             let Some(msg) = obj.get("message").filter(|m| m.is_object()) else { continue };
-            let (Some(id), Some(out)) = (msg.get("id").and_then(Value::as_str), msg.get("usage").and_then(|u| u.get("output_tokens")).and_then(as_int)) else { continue };
+            let (Some(id), Some(out)) = (msg.get("id").and_then(Value::as_str), msg.get("usage").and_then(|u| u.get("output_tokens")).and_then(as_int)) else {
+                continue;
+            };
             let e = per_message.entry(id.to_string()).or_insert(0);
             *e = (*e).max(out);
         }

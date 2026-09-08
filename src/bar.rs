@@ -81,7 +81,10 @@ pub fn install(lib: &Path) -> i32 {
             eprintln!("warning: waybar not found; the command still works, the bar item will not show until it is.");
         }
         if !keychain::credential_files().iter().any(|f| f.is_file()) {
-            eprintln!("warning: no Claude Code login found ({}). Run 'claude' once and log in; the widget reads that token.", keychain::credential_files()[0].display());
+            eprintln!(
+                "warning: no Claude Code login found ({}). Run 'claude' once and log in; the widget reads that token.",
+                keychain::credential_files()[0].display()
+            );
         }
     }
     // no default provider: the first install enables the CLIs that have a login here

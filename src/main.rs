@@ -51,9 +51,16 @@ const HELP: &str = "pulse-limits: your Claude and Codex plan limits as a retro p
 
 fn main() {
     let lib = util::lib_dir(); // from the invoked path and the PATH we were started with, before it is pinned
-    // SwiftBar hands the plugin launchd's PATH: pin our own. Waybar (or a Nix wrapper) hands us one worth keeping.
+                               // SwiftBar hands the plugin launchd's PATH: pin our own. Waybar (or a Nix wrapper) hands us one worth keeping.
     let path = env::var("PATH").unwrap_or_default();
-    env::set_var("PATH", if is_macos() { "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin".to_string() } else { format!("{path}{}/usr/local/bin:/usr/bin:/bin", if path.is_empty() { "" } else { ":" }) });
+    env::set_var(
+        "PATH",
+        if is_macos() {
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin".to_string()
+        } else {
+            format!("{path}{}/usr/local/bin:/usr/bin:/bin", if path.is_empty() { "" } else { ":" })
+        },
+    );
     let args: Vec<String> = env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let arg = args.get(1);
@@ -174,7 +181,9 @@ fn raw(name: Option<&String>) -> i32 {
     if p == "claude" && !last.is_file() && dir.join("last-reply.json").is_file() {
         last = dir.join("last-reply.json");
     }
-    let pretty = |f: &std::path::Path| -> Option<String> { serde_json::from_slice::<Value>(&fs::read(f).ok()?).ok().and_then(|v| serde_json::to_string_pretty(&v).ok()) };
+    let pretty = |f: &std::path::Path| -> Option<String> {
+        serde_json::from_slice::<Value>(&fs::read(f).ok()?).ok().and_then(|v| serde_json::to_string_pretty(&v).ok())
+    };
     if good.is_file() {
         println!("{}", pretty(&good).unwrap_or_else(|| "not JSON".into()));
         0

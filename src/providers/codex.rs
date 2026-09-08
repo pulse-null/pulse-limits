@@ -42,7 +42,15 @@ pub fn usage_url(config: &str) -> String {
 /// A JWT's payload as JSON, nothing if it is not a JWT.
 pub fn jwt_claims(token: &str) -> Option<Value> {
     let part = token.split('.').nth(1)?;
-    let std: String = part.chars().map(|c| match c { '-' => '+', '_' => '/', c => c }).filter(|c| *c != '=').collect();
+    let std: String = part
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .filter(|c| *c != '=')
+        .collect();
     let engine = GeneralPurpose::new(&STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
     let bytes = engine.decode(std).ok()?;
     serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)
@@ -119,7 +127,11 @@ pub fn read_auth(file: &PathBuf, now: i64) -> Auth {
 
 /// "PLUS" from plan_type; "?" becomes nothing.
 pub fn plan_label(plan: &str) -> String {
-    if plan == "?" { String::new() } else { upper(&plan.replace('_', " ")) }
+    if plan == "?" {
+        String::new()
+    } else {
+        upper(&plan.replace('_', " "))
+    }
 }
 
 fn window_name(secs: i64) -> String {
@@ -270,7 +282,10 @@ pub fn doctor(pstatus: &str) {
         let text = String::from_utf8_lossy(&body).replace('\n', " ");
         match code {
             200 => match serde_json::from_slice::<Value>(&body) {
-                Ok(v) => ok(&format!("HTTP 200: {}", json!({ "plan_type": v["plan_type"], "primary": v["rate_limit"]["primary_window"]["used_percent"], "secondary": v["rate_limit"]["secondary_window"]["used_percent"] }))),
+                Ok(v) => ok(&format!(
+                    "HTTP 200: {}",
+                    json!({ "plan_type": v["plan_type"], "primary": v["rate_limit"]["primary_window"]["used_percent"], "secondary": v["rate_limit"]["secondary_window"]["used_percent"] })
+                )),
                 Err(_) => ok("HTTP 200: unexpected JSON shape"),
             },
             401 => bad("HTTP 401: the token is expired or revoked. Open the Codex CLI once, or run 'codex login'."),
@@ -281,7 +296,8 @@ pub fn doctor(pstatus: &str) {
     }
     println!("  last reply (shape digest)");
     st.doctor_digests(|c| {
-        let extra: Vec<Value> = c.get("additional_rate_limits").and_then(Value::as_array).map(|a| a.iter().map(|e| e["limit_name"].clone()).collect()).unwrap_or_default();
+        let extra: Vec<Value> =
+            c.get("additional_rate_limits").and_then(Value::as_array).map(|a| a.iter().map(|e| e["limit_name"].clone()).collect()).unwrap_or_default();
         json!({ "keys": c.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default(), "plan_type": c["plan_type"],
                 "primary": c["rate_limit"]["primary_window"], "secondary": c["rate_limit"]["secondary_window"], "extra": extra })
     });
@@ -329,11 +345,27 @@ mod tests {
         assert_eq!(a.status, "BAD AUTH FILE");
         assert_eq!(a.hint, format!("{} IS NOT JSON. RUN: codex login", d.join("auth.json").display()));
         // 5. expired JWT: reported, no token to call with
-        let a = read_auth(&auth_file(&d, &format!(r#"{{"tokens": {{"access_token": "{EXPIRED}", "refresh_token": "rt", "id_token": "{ID_TOKEN}"}}, "last_refresh": "2026-08-01T10:00:00.000Z"}}"#)), now);
+        let a = read_auth(
+            &auth_file(
+                &d,
+                &format!(
+                    r#"{{"tokens": {{"access_token": "{EXPIRED}", "refresh_token": "rt", "id_token": "{ID_TOKEN}"}}, "last_refresh": "2026-08-01T10:00:00.000Z"}}"#
+                ),
+            ),
+            now,
+        );
         assert_eq!((a.status.as_str(), a.hint.as_str(), a.token.as_str()), ("TOKEN EXPIRED", "OPEN CODEX ONCE, IT REFRESHES THE TOKEN", ""));
         assert_eq!((a.plan.as_str(), a.account.as_str(), a.expires), ("plus", "acct_fixture", 1788870066));
         // 6. valid JWT
-        let a = read_auth(&auth_file(&d, &format!(r#"{{"tokens": {{"access_token": "{VALID}", "refresh_token": "rt", "id_token": "{ID_TOKEN}", "account_id": "acct_fixture"}}, "last_refresh": "2026-09-08T10:00:00.000Z"}}"#)), now);
+        let a = read_auth(
+            &auth_file(
+                &d,
+                &format!(
+                    r#"{{"tokens": {{"access_token": "{VALID}", "refresh_token": "rt", "id_token": "{ID_TOKEN}", "account_id": "acct_fixture"}}, "last_refresh": "2026-09-08T10:00:00.000Z"}}"#
+                ),
+            ),
+            now,
+        );
         assert_eq!((a.status.as_str(), a.token, a.plan.as_str(), a.account.as_str(), a.expires), ("", VALID.to_string(), "plus", "acct_fixture", 1788877266));
         assert_eq!(a.last_refresh, "2026-09-08T10:00:00.000Z");
         let _ = std::fs::remove_dir_all(&d);

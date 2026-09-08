@@ -249,7 +249,13 @@ impl Shape for Trace<'_> {
                 None => (y, y),
                 Some(q) => (q.min(y), q.max(y)),
             };
-            let keep = if age < w / 3 { 1.0 } else if age < 2 * w / 3 { 0.7 } else { 0.4 };
+            let keep = if age < w / 3 {
+                1.0
+            } else if age < 2 * w / 3 {
+                0.7
+            } else {
+                0.4
+            };
             let c = faded(self.color, keep, self.truecolor);
             for yy in lo..=hi {
                 p.paint(i, yy as usize, c);
@@ -276,11 +282,51 @@ struct Palette {
 fn palette(name: &str) -> Palette {
     use Color::*;
     match name {
-        "modern" => Palette { title: Role(0xf5f5f7, White), text: Role(0xf5f5f7, White), dim: Role(0x98989d, DarkGray), ok: Role(0x30d158, LightGreen), warn: Role(0xffd60a, LightYellow), bad: Role(0xff453a, LightRed), accent: Role(0x0a84ff, LightBlue) },
-        "cyber" => Palette { title: Role(0x00f0ff, LightCyan), text: Role(0xdbe4ff, White), dim: Role(0x4a5080, Blue), ok: Role(0x00f0ff, LightCyan), warn: Role(0xf9f002, LightYellow), bad: Role(0xff3b5c, LightRed), accent: Role(0xff2bd6, LightMagenta) },
-        "synth" => Palette { title: Role(0xff2d95, LightMagenta), text: Role(0xffffff, White), dim: Role(0xb39ddb, Magenta), ok: Role(0x22e6ff, LightCyan), warn: Role(0xffb347, LightYellow), bad: Role(0xff4d4d, LightRed), accent: Role(0xb39ddb, LightMagenta) },
-        "analog" => Palette { title: Role(0xefe6cf, LightYellow), text: Role(0xefe6cf, LightYellow), dim: Role(0x8a8069, DarkGray), ok: Role(0xc9a227, Yellow), warn: Role(0xff9f1c, LightYellow), bad: Role(0xff5a5a, LightRed), accent: Role(0xc9a227, Yellow) },
-        _ => Palette { title: Role(0xb9ffcb, LightGreen), text: Role(0xb9ffcb, LightGreen), dim: Role(0x3d8a52, Green), ok: Role(0x5cff8a, LightGreen), warn: Role(0xffb63b, LightYellow), bad: Role(0xff5a5a, LightRed), accent: Role(0x8fd3ff, LightCyan) },
+        "modern" => Palette {
+            title: Role(0xf5f5f7, White),
+            text: Role(0xf5f5f7, White),
+            dim: Role(0x98989d, DarkGray),
+            ok: Role(0x30d158, LightGreen),
+            warn: Role(0xffd60a, LightYellow),
+            bad: Role(0xff453a, LightRed),
+            accent: Role(0x0a84ff, LightBlue),
+        },
+        "cyber" => Palette {
+            title: Role(0x00f0ff, LightCyan),
+            text: Role(0xdbe4ff, White),
+            dim: Role(0x4a5080, Blue),
+            ok: Role(0x00f0ff, LightCyan),
+            warn: Role(0xf9f002, LightYellow),
+            bad: Role(0xff3b5c, LightRed),
+            accent: Role(0xff2bd6, LightMagenta),
+        },
+        "synth" => Palette {
+            title: Role(0xff2d95, LightMagenta),
+            text: Role(0xffffff, White),
+            dim: Role(0xb39ddb, Magenta),
+            ok: Role(0x22e6ff, LightCyan),
+            warn: Role(0xffb347, LightYellow),
+            bad: Role(0xff4d4d, LightRed),
+            accent: Role(0xb39ddb, LightMagenta),
+        },
+        "analog" => Palette {
+            title: Role(0xefe6cf, LightYellow),
+            text: Role(0xefe6cf, LightYellow),
+            dim: Role(0x8a8069, DarkGray),
+            ok: Role(0xc9a227, Yellow),
+            warn: Role(0xff9f1c, LightYellow),
+            bad: Role(0xff5a5a, LightRed),
+            accent: Role(0xc9a227, Yellow),
+        },
+        _ => Palette {
+            title: Role(0xb9ffcb, LightGreen),
+            text: Role(0xb9ffcb, LightGreen),
+            dim: Role(0x3d8a52, Green),
+            ok: Role(0x5cff8a, LightGreen),
+            warn: Role(0xffb63b, LightYellow),
+            bad: Role(0xff5a5a, LightRed),
+            accent: Role(0x8fd3ff, LightCyan),
+        },
     }
 }
 
@@ -345,13 +391,22 @@ impl App {
                 self.d.insert(k, v);
             }
         }
-        let windows: Vec<Win> = self.d.get("windows").and_then(Value::as_array).map(|a| {
-            a.iter().filter_map(|w| Some(Win {
-                label: w.get("label")?.as_str()?.to_string(),
-                pct: w.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
-                resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of_f),
-            })).collect()
-        }).unwrap_or_default();
+        let windows: Vec<Win> = self
+            .d
+            .get("windows")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|w| {
+                        Some(Win {
+                            label: w.get("label")?.as_str()?.to_string(),
+                            pct: w.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
+                            resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of_f),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // SESSION is the big number; a provider with no session window (a weekly pool only) shows its first one there
         let session_i = windows.iter().position(|w| w.label == "SESSION").or(if windows.is_empty() { None } else { Some(0) });
         self.session = session_i.map(|i| windows[i].clone());
@@ -368,11 +423,13 @@ impl App {
             }
         }
         let act = activity.or_else(|| self.d.get("activity").cloned());
-        self.act = act.and_then(|a| Some((
-            a.get("tok_per_min")?.as_f64()?,
-            a.get("idle_s").and_then(Value::as_f64).unwrap_or(0.0),
-            a.get("sessions").and_then(Value::as_i64).unwrap_or(0),
-        )));
+        self.act = act.and_then(|a| {
+            Some((
+                a.get("tok_per_min")?.as_f64()?,
+                a.get("idle_s").and_then(Value::as_f64).unwrap_or(0.0),
+                a.get("sessions").and_then(Value::as_i64).unwrap_or(0),
+            ))
+        });
         true
     }
 
@@ -445,7 +502,11 @@ impl App {
     fn next_reset(&self) -> String {
         let n = now();
         let next = self.session.iter().chain(self.others.iter()).filter_map(|w| w.resets).filter(|r| *r > n).fold(f64::INFINITY, f64::min);
-        if next.is_finite() { hhmm(next as i64, self.tz) } else { "?".into() }
+        if next.is_finite() {
+            hhmm(next as i64, self.tz)
+        } else {
+            "?".into()
+        }
     }
 
     fn buckets(&self, n: usize) -> Vec<f64> {
@@ -463,11 +524,21 @@ impl App {
     }
 
     fn color(&self, r: Role) -> Color {
-        if self.truecolor { rgb(r.0) } else { r.1 }
+        if self.truecolor {
+            rgb(r.0)
+        } else {
+            r.1
+        }
     }
 
     fn tone(&self, p: &Palette, pct: f64) -> Color {
-        self.color(if pct >= 85.0 { p.bad } else if pct >= 60.0 { p.warn } else { p.ok })
+        self.color(if pct >= 85.0 {
+            p.bad
+        } else if pct >= 60.0 {
+            p.warn
+        } else {
+            p.ok
+        })
     }
 }
 
@@ -528,14 +599,24 @@ fn layout(app: &mut App, w: u16, h: u16) -> Layout {
     let gap_trace = gap_trace as i32 + left.min(2); // what is left widens the gaps; the rest stays above the footer
     let reset_in_body = body_h >= 7; // room for the reset under the digits; the bar then spans the width
     let mut y = 1;
-    let rule_y = if rule { y += 1; Some(1) } else { None };
+    let rule_y = if rule {
+        y += 1;
+        Some(1)
+    } else {
+        None
+    };
     let (label_y, body_y) = (y, y + 1);
     y += 1 + body_h;
     let bar_y = y;
     y += 1 + gap_trace;
     let win_y = y;
     y += n_win + if gap_spark && n_win > 0 { 1 } else { 0 };
-    let spark_label_y = if spark_label { y += 1; Some(y - 1) } else { None };
+    let spark_label_y = if spark_label {
+        y += 1;
+        Some(y - 1)
+    } else {
+        None
+    };
     let spark_y = y;
     y += spark_h;
     let axis_y = if axis { Some(y) } else { None };
@@ -615,7 +696,13 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         f.render_widget(Paragraph::new(Line::styled("─".repeat((w - 2 * m) as usize), dim)), rect(m, y, w - 2 * m, 1, area));
     }
     // the trace, its activity label, and NO SIGNAL over a flat line when there is no reading
-    let col = if !app.alive { app.color(p.dim) } else if !app.status().is_empty() { app.color(p.warn) } else { app.tone(&p, app.session_pct as f64) };
+    let col = if !app.alive {
+        app.color(p.dim)
+    } else if !app.status().is_empty() {
+        app.color(p.warn)
+    } else {
+        app.tone(&p, app.session_pct as f64)
+    };
     if let Some(mut lab) = app.activity_label() {
         if lab.chars().count() + 2 > l.trace_w as usize {
             lab = lab.split(" · ").next().unwrap_or_default().to_string(); // narrow: drop the session count
@@ -690,13 +777,18 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         text!(y, m, w - 2 * m, Line::styled("SESSION · 12H", dim), Alignment::Left);
     }
     let buckets = app.buckets((w - 2 * m) as usize);
-    let bars: Vec<SparklineBar> = buckets.iter().map(|&v| {
-        if v < 0.0 {
-            SparklineBar::from(None)
-        } else {
-            SparklineBar::from(Some((v.max(1.0)) as u64)).style(Some(Style::new().fg(app.tone(&p, v))))
-        }
-    }).collect();
+    let bars: Vec<SparklineBar> = buckets
+        .iter()
+        .map(
+            |&v| {
+                if v < 0.0 {
+                    SparklineBar::from(None)
+                } else {
+                    SparklineBar::from(Some((v.max(1.0)) as u64)).style(Some(Style::new().fg(app.tone(&p, v))))
+                }
+            },
+        )
+        .collect();
     let spark = Sparkline::default().data(bars).max(100).style(dim).absent_value_symbol(" ");
     let spark_area = rect(m, l.spark_y, w - 2 * m, l.spark_h, area);
     f.render_widget(spark, spark_area);
@@ -713,7 +805,10 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     // footer: freshness, credits, keys
     let status = app.status();
     let (left, left_style) = if !status.is_empty() && app.alive {
-        (format!("? {status} · LAST GOOD {} AGO", short(app.age() as i64)), Style::new().fg(app.color(if (t * 2.0) as i64 % 2 == 1 { p.bad } else { p.warn })))
+        (
+            format!("? {status} · LAST GOOD {} AGO", short(app.age() as i64)),
+            Style::new().fg(app.color(if (t * 2.0) as i64 % 2 == 1 { p.bad } else { p.warn })),
+        )
     } else if app.alive {
         (format!("UPDATED {} AGO · NEXT RESET {}", short(app.age() as i64), app.next_reset()), dim)
     } else {
@@ -724,7 +819,11 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     let mut right: Vec<Span> = vec![];
     let mut right_w = 0usize;
     let keys = "q quit  t theme  r reload  ? help";
-    let credits = app.d.get("credits").and_then(|c| Some(format!("CREDITS {:.2} {}", c.get("used")?.as_f64()?, c.get("currency").and_then(Value::as_str).unwrap_or("")))).map(|s| s.trim_end().to_string());
+    let credits = app
+        .d
+        .get("credits")
+        .and_then(|c| Some(format!("CREDITS {:.2} {}", c.get("used")?.as_f64()?, c.get("currency").and_then(Value::as_str).unwrap_or(""))))
+        .map(|s| s.trim_end().to_string());
     if let Some(c) = credits {
         if (w as usize) >= 2 * m as usize + left_w + 2 + c.len() {
             right_w = c.len();
@@ -747,7 +846,12 @@ fn render_help(f: &mut Frame, app: &App, p: &Palette) {
     let area = f.area();
     let source = match &app.feed.provider {
         Some(prov) => format!("payload   built in process every {}s, for {prov} (panel.url left alone)", PAYLOAD_EVERY.as_secs()),
-        None => format!("payload   {} every {}s\n          built in process every {}s (once now if that file is stale)", app.feed.panel_url.display(), PANEL_EVERY.as_secs(), PAYLOAD_EVERY.as_secs()),
+        None => format!(
+            "payload   {} every {}s\n          built in process every {}s (once now if that file is stale)",
+            app.feed.panel_url.display(),
+            PANEL_EVERY.as_secs(),
+            PAYLOAD_EVERY.as_secs()
+        ),
     };
     let mut lines = vec![
         "q   quit".to_string(),
@@ -762,10 +866,14 @@ fn render_help(f: &mut Frame, app: &App, p: &Palette) {
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect::new((area.width - w) / 2, (area.height - h) / 2, w, h);
     f.render_widget(Clear, r);
-    let text: Vec<Line> = lines.iter().enumerate().map(|(i, s)| {
-        let style = if i < 4 { bold(app.color(p.text)) } else { Style::new().fg(app.color(p.text)) };
-        Line::styled(format!(" {s}"), style)
-    }).collect();
+    let text: Vec<Line> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let style = if i < 4 { bold(app.color(p.text)) } else { Style::new().fg(app.color(p.text)) };
+            Line::styled(format!(" {s}"), style)
+        })
+        .collect();
     let block = Block::bordered().title(" PULSE LIMITS ").border_style(Style::new().fg(app.color(p.dim))).title_style(bold(app.color(p.title)));
     f.render_widget(Paragraph::new(text).block(block), r);
 }
@@ -805,7 +913,11 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 }
 
 fn usage() -> String {
-    format!("usage: pulse-limits tui [{}] [--theme {}]\n  q quit, t next theme, r re-read the payload, ? help", providers::KNOWN.join("|"), THEMES.join("|"))
+    format!(
+        "usage: pulse-limits tui [{}] [--theme {}]\n  q quit, t next theme, r re-read the payload, ? help",
+        providers::KNOWN.join("|"),
+        THEMES.join("|")
+    )
 }
 
 /// `pulse-limits tui [provider] [--theme NAME]`; returns the exit code.
@@ -863,7 +975,8 @@ pub fn run(args: &[String]) -> i32 {
         tz: local_offset(),
     };
     app.d.insert("status".into(), Value::String("NO DATA".into()));
-    let mut terminal = match ratatui::try_init() { // raw mode, alternate screen, and a panic hook that restores both
+    let mut terminal = match ratatui::try_init() {
+        // raw mode, alternate screen, and a panic hook that restores both
         Ok(t) => t,
         Err(e) => {
             eprintln!("pulse-limits tui: {e} (is this a terminal?)");

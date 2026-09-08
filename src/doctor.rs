@@ -34,7 +34,11 @@ pub fn run(lib: &Path, version: &str) -> i32 {
     }
     println!("files");
     ok(&format!("lib: {}", lib.display()));
-    let files: &[&str] = if is_macos() { &[PLUGIN, "panel.html", "bin/pulse-limits", "bin/pulse-popover", "bin/pulse-menubar"] } else { &[PLUGIN, "panel.html", "bin/pulse-limits"] };
+    let files: &[&str] = if is_macos() {
+        &[PLUGIN, "panel.html", "bin/pulse-limits", "bin/pulse-popover", "bin/pulse-menubar"]
+    } else {
+        &[PLUGIN, "panel.html", "bin/pulse-limits"]
+    };
     for f in files {
         if lib.join(f).exists() {
             ok(f);
@@ -45,7 +49,10 @@ pub fn run(lib: &Path, version: &str) -> i32 {
     if is_macos() {
         println!("swiftbar");
         if crate::bar::swiftbar_installed() {
-            ok(&format!("SwiftBar {} installed", command_output("defaults", &["read", "/Applications/SwiftBar.app/Contents/Info.plist", "CFBundleShortVersionString"]).unwrap_or_default()));
+            ok(&format!(
+                "SwiftBar {} installed",
+                command_output("defaults", &["read", "/Applications/SwiftBar.app/Contents/Info.plist", "CFBundleShortVersionString"]).unwrap_or_default()
+            ));
         } else {
             bad("SwiftBar not in /Applications");
         }
@@ -78,7 +85,9 @@ pub fn run(lib: &Path, version: &str) -> i32 {
             cfg = waybar_dir().join("config");
         }
         match fs::read_to_string(&cfg) {
-            Ok(text) if text.contains("pulse-limits.jsonc") && text.contains("\"custom/pulse-limits\"") => ok(&format!("{} includes the module", cfg.display())),
+            Ok(text) if text.contains("pulse-limits.jsonc") && text.contains("\"custom/pulse-limits\"") => {
+                ok(&format!("{} includes the module", cfg.display()))
+            }
             Ok(_) => bad(&format!("{} does not include the module yet (pulse-limits bar on prints the two lines)", cfg.display())),
             Err(_) => bad(&format!("no Waybar config at {}", waybar_dir().display())),
         }
@@ -91,7 +100,10 @@ pub fn run(lib: &Path, version: &str) -> i32 {
         ok(&format!("enabled: {}  (first is the menu bar default; toggle with: pulse-limits provider NAME)", enabled.join(" ")));
     }
     let running: Vec<&str> = enabled.iter().filter(|p| process_running(p)).map(String::as_str).collect();
-    ok(&format!("CLI running now: {} (the menu bar follows the first enabled one that runs)", if running.is_empty() { "none".to_string() } else { running.join(" ") }));
+    ok(&format!(
+        "CLI running now: {} (the menu bar follows the first enabled one that runs)",
+        if running.is_empty() { "none".to_string() } else { running.join(" ") }
+    ));
     println!("plugin run");
     let b = payload::build(PANEL_INTERVAL, true, None);
     ok(&format!("menu bar shows: {}", if b.active.is_empty() { "nothing" } else { &b.active }));

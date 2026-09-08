@@ -42,7 +42,8 @@ pub fn open(lib: &Path) -> i32 {
     };
     let popover = lib.join("bin").join("pulse-popover");
     if is_macos() && is_executable(&popover) {
-        spawn_detached(Command::new(&popover).args([POPOVER_W.to_string(), POPOVER_H.to_string()])); // first launch shows itself
+        spawn_detached(Command::new(&popover).args([POPOVER_W.to_string(), POPOVER_H.to_string()]));
+    // first launch shows itself
     } else if is_macos() {
         run_quiet("open", &[&url]); // helper not built: at least show the page
     } else {

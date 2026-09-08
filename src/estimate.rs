@@ -90,7 +90,14 @@ pub fn estimate_with(file: &Path, projects: &Path, pct: f64, fetched: i64, now: 
         since = output_tokens(projects, fetched as f64, now);
         est = (pct + c.k * since as f64).min(100.0);
     }
-    Estimate { pct_est: (est * 10.0).round() / 10.0, pct_api: pct, calibrated: c.k > 0.0, k: c.k, samples: c.samples, tokens_since: since }
+    Estimate {
+        pct_est: (est * 10.0).round() / 10.0,
+        pct_api: pct,
+        calibrated: c.k > 0.0,
+        k: c.k,
+        samples: c.samples,
+        tokens_since: since,
+    }
 }
 
 pub fn estimate(pct: f64, fetched: i64) -> Estimate {
@@ -116,7 +123,10 @@ mod tests {
         update(&mut c, 3.0, 1900, |_, _| 5000);
         assert_eq!((c.anchor_pct, c.k), (3.0, 0.0));
         // first calibration: 2 % over 4000 tokens
-        update(&mut c, 5.0, 2200, |a, b| { assert_eq!((a, b), (1900, 2200)); 4000 });
+        update(&mut c, 5.0, 2200, |a, b| {
+            assert_eq!((a, b), (1900, 2200));
+            4000
+        });
         assert_eq!((c.k, c.samples), (0.0005, 1));
         // smoothing: 0.6 * old + 0.4 * observed
         update(&mut c, 9.0, 2500, |_, _| 8000); // kobs = 0.0005
@@ -154,7 +164,11 @@ mod tests {
         // calibrated: tokens since the anchor move the estimate, capped at 100 and rounded to a tenth
         save(&f, &Calib { anchor_pct: 13.0, anchor_at: 1788876097, k: 0.001, samples: 2 });
         std::fs::create_dir_all(d.join("p")).unwrap();
-        std::fs::write(d.join("p").join("s.jsonl"), "{\"type\":\"assistant\",\"timestamp\":\"2026-09-08T14:03:00Z\",\"message\":{\"id\":\"m\",\"usage\":{\"output_tokens\":2750}}}\n").unwrap();
+        std::fs::write(
+            d.join("p").join("s.jsonl"),
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-08T14:03:00Z\",\"message\":{\"id\":\"m\",\"usage\":{\"output_tokens\":2750}}}\n",
+        )
+        .unwrap();
         let e = estimate_with(&f, &d, 13.0, 1788876097, 1788876300.0);
         assert_eq!((e.pct_est, e.calibrated, e.tokens_since), (15.8, true, 2750)); // 13 + 2.75 = 15.75 -> 15.8
         let e = estimate_with(&f, &d, 99.0, 1788876097, 1788876300.0);
