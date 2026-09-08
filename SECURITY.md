@@ -2,8 +2,8 @@
 
 pulse-limits reads the login tokens your vendor CLIs keep on disk and sends them, over
 TLS, only to the vendors' own usage endpoints. Anything that weakens that is a security
-bug: a token in any output, a write to a credential store, a request to any other host,
-a spawned vendor CLI.
+bug: a token in any output, a write to a credential store beyond Grok's documented token
+refresh, a request to any other host, a spawned vendor CLI.
 
 ## How to report
 

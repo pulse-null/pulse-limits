@@ -1,0 +1,28 @@
+{
+  "https://accounts.x.ai/sign-in": {
+    "key": "",
+    "note": "an emptied legacy entry the CLI left behind: never picked, must survive a rewrite"
+  },
+  "https://auth.x.ai::00000000-0000-4000-8000-000000000000": {
+    "key": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6ImV4YW1wbGUta2lkIn0.eyJpc3MiOiJodHRwczovL2F1dGgueC5haSIsInN1YiI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImF1ZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMCIsImV4cCI6MTU3Nzg1ODQwMCwiaWF0IjoxNTc3ODM2ODAwLCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIG9mZmxpbmVfYWNjZXNzIGdyb2stY2xpOmFjY2VzcyBhcGk6YWNjZXNzIiwicHJpbmNpcGFsX3R5cGUiOiJVc2VyIiwicHJpbmNpcGFsX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiY2xpZW50X2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAwIiwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDA2IiwidGllciI6NCwidGVhbV9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyJ9.RVhQSVJFRC1EVU1NWS1TSUdOQVRVUkUtTk9ULUEtUkVBTC1UT0tFTi1FWFBJUkVELURVTU1ZLVNJR05BVFVSRS1OT1QtQS1SRUFMLVRPS0VO",
+    "auth_mode": "oidc",
+    "create_time": "2020-01-01T00:00:00.000000+00:00",
+    "user_id": "00000000-0000-4000-8000-000000000001",
+    "email": "user@example.com",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "profile_image_asset_id": "00000000-0000-4000-8000-000000000004",
+    "principal_type": "User",
+    "principal_id": "00000000-0000-4000-8000-000000000001",
+    "team_id": "00000000-0000-4000-8000-000000000003",
+    "coding_data_retention_opt_out": true,
+    "refresh_token": "DUMMYREFRESHTOKEN_before_rotation_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "expires_at": "2020-01-01T06:00:00.000000+00:00",
+    "oidc_issuer": "https://auth.x.ai",
+    "oidc_client_id": "00000000-0000-4000-8000-000000000000",
+    "future_field": {
+      "kept": [1, 2.5, "three", null, true]
+    }
+  },
+  "top_level_unknown": "kept too"
+}
