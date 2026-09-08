@@ -155,7 +155,7 @@ case "${1:-help}" in
     "$0" install >/dev/null                       # relink in case the plugin file name changed
     after=$("$0" version)
     if [[ "$before" == "$after" ]]; then echo "already up to date: $after"; else echo "updated: $before -> $after"; fi ;;
-  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,/^# Works from/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   tui)     shift; [[ -x "$LIB/bin/pulse-tui" ]] || { echo "pulse-limits: bin/pulse-tui is not built. Run ./build.sh (it needs cargo: https://rustup.rs)" >&2; exit 1; }
            PULSE_LIB="$LIB" exec "$LIB/bin/pulse-tui" "$@" ;;
   claude)  shift; exec "$0" tui claude "$@" ;;
