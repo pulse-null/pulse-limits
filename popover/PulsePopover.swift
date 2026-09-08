@@ -28,15 +28,17 @@
 import Cocoa
 import WebKit
 
-let cacheDir  = NSString(string: "~/.cache/pulse-limits").expandingTildeInPath
+let env = ProcessInfo.processInfo.environment
+func envPath(_ name: String) -> String? { env[name].flatMap { $0.isEmpty ? nil : $0 } }   // empty means unset, as in the shell
+let cacheDir  = envPath("XDG_CACHE_HOME").map { $0 + "/pulse-limits" } ?? NSString(string: "~/.cache/pulse-limits").expandingTildeInPath
 let urlFile   = cacheDir + "/panel.url"
 let pidFile   = cacheDir + "/popover.pid"
 let stampFile = cacheDir + "/popover.closed"   // "hidden at" epoch, read by open-monitor.sh
 let argv = CommandLine.arguments
 let width  = Double(argv.count > 1 ? argv[1] : "") ?? 520
 let height = Double(argv.count > 2 ? argv[2] : "") ?? 316
-let idleExit = TimeInterval(ProcessInfo.processInfo.environment["PULSE_IDLE_EXIT"] ?? "") ?? 600
-let projectsDir = NSString(string: "~/.claude/projects").expandingTildeInPath
+let idleExit = TimeInterval(env["PULSE_IDLE_EXIT"] ?? "") ?? 600
+let projectsDir = envPath("CLAUDE_PROJECTS_DIR") ?? NSString(string: "~/.claude/projects").expandingTildeInPath
 let pluginScript = Bundle.main.executableURL!.resolvingSymlinksInPath()
     .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("pulse-limits.1m.sh").path
 
@@ -64,7 +66,8 @@ func outputTokens(from: Date, to: Date) -> Int {
         let tail: UInt64 = span <= 120 ? 131_072 : span <= 900 ? 1_048_576 : 4_194_304
         let start = size > tail ? size - tail : 0
         try? fh.seek(toOffset: start)
-        guard let data = try? fh.readToEnd(), let text = String(data: data, encoding: .utf8) else { continue }
+        guard let data = try? fh.readToEnd() else { continue }
+        let text = String(decoding: data, as: UTF8.self)   // lossy: the tail may start mid-character, in the line we drop anyway
         var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         if start > 0, !lines.isEmpty { lines.removeFirst() }
         for line in lines where line.contains("\"type\":\"assistant\"") && line.contains("output_tokens") {
