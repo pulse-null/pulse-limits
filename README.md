@@ -73,6 +73,16 @@ slices, and the tone travels as a CSS class (`warn`, `crit`, `stale`, `dead`) yo
 colour in `style.css`. Click opens the monitor in the browser. Update with
 `pulse-limits update` (git and Homebrew installs) or by rebuilding the flake.
 
+**Any distro.** The binary, the Waybar module and the paths are the same everywhere;
+only how you get the binary differs. At runtime it needs `pgrep` (procps) and
+`xdg-open` (xdg-utils), which every desktop has. Building needs Rust 1.85 or newer:
+
+| Distro | Get the binary |
+|---|---|
+| NixOS, or any box with Nix | `nix profile install github:dnacenta/pulse-limits`; nothing else to install |
+| Arch, Omarchy, CachyOS | `pacman -S rust git waybar ttf-nerd-fonts-symbols`, then the installer or `./build.sh` (Arch's `rust` is current) |
+| Debian, Ubuntu | their packaged `rustc` is too old; install Rust from [rustup.rs](https://rustup.rs), `apt install git curl xdg-utils procps`, then the installer or `./build.sh`; Waybar and a Nerd Font from their sites |
+
 ## Providers
 
 Enable them from the right-click menu (PROVIDERS) or with `pulse-limits provider NAME`.
