@@ -409,7 +409,7 @@ fn wins(v: Option<&Value>) -> Vec<Win> {
         .unwrap_or_default()
 }
 
-/// CLAUDE SESSION, GROK WEEK: a window named after a model or a product (FABLE, GPT-5) keeps its own name.
+/// CLAUDE SESSION, GROK 7D: a window named after a model or a product (FABLE, GPT-5) keeps its own name.
 fn qualify(provider: &str, w: &Win) -> Win {
     Win { label: crate::util::qualified(provider, &w.label), ..w.clone() }
 }
@@ -1323,7 +1323,7 @@ mod tests {
         }
         assert!(rows[top + 5].trim_end().ends_with("RESET 2H 14M · EST"), "{}", rows[top + 5]);
         assert!(rows[l.bar_y as usize].contains("█") && rows[l.bar_y as usize].contains("░"));
-        assert!(text.contains("WEEK ") && text.contains(" 17%  RESET 4D 07H"), "{text}");
+        assert!((text.contains("WEEK ") || text.contains("7D ")) && text.contains(" 17%  RESET 4D 07H"), "{text}");
         assert!(text.contains("FABLE") && text.contains(" 30%  RESET 1H 00M"), "{text}");
         assert!(text.contains("COWORK") && text.contains(" 62%  RESET ?"), "{text}");
         assert!(text.contains("SCOPED") && text.contains(" 90%  RESET ?"), "{text}");
@@ -1526,18 +1526,18 @@ mod tests {
         let grok = json!({"tok_per_min": 610, "idle_s": 0, "sessions": 1});
         let a = app(several(true, grok.clone()), None, None);
         assert!(a.multi);
-        assert_eq!(labels(&a), ["CLAUDE WEEK", "FABLE", "CODEX SESSION", "GPT-5", "GROK WEEK"]);
+        assert_eq!(labels(&a), ["CLAUDE 7D", "FABLE", "CODEX SESSION", "GPT-5", "GROK 7D"]);
         assert_eq!(a.session_label(), "CLAUDE SESSION");
         assert_eq!(a.session.as_ref().unwrap().label, "SESSION", "the window itself keeps its name: the EST marker still finds it");
         assert_eq!(a.reset_text(a.session.as_ref().unwrap(), true), "RESET 2H 14M · EST");
-        // grok active on the same monitor: its weekly pool is the big number, GROK WEEK; claude's windows join the bars
+        // grok active on the same monitor: its weekly pool is the big number, GROK 7D; claude's windows join the bars
         let mut p = several(false, Value::Null);
         p["provider"] = json!("grok");
         p["windows"] = json!([{"label": "WEEK", "pct": 37.5, "resets": ts(3 * 86400 + 30)}]);
         p["estimate"] = Value::Null;
         let a = app(p, None, None);
-        assert_eq!((a.session_label().as_str(), a.session_pct), ("GROK WEEK", 38));
-        assert_eq!(labels(&a), ["CLAUDE SESSION", "CLAUDE WEEK", "FABLE"]);
+        assert_eq!((a.session_label().as_str(), a.session_pct), ("GROK 7D", 38));
+        assert_eq!(labels(&a), ["CLAUDE SESSION", "CLAUDE 7D", "FABLE"]);
         // no reading at all with two providers on: the caption still says whose the missing session is
         let mut p = several(false, Value::Null);
         p["windows"] = json!([]);
@@ -1556,12 +1556,12 @@ mod tests {
             let rows = draw(&mut a, w, h, 1001.0);
             assert!(rows[l.label_y as usize].trim_end().ends_with("CLAUDE SESSION"), "{w}x{h}: {}", rows[l.label_y as usize]);
             let text = rows.join("\n");
-            assert!(text.contains("CLAUDE WEEK ") && text.contains(" 17%  ") && text.contains("FABLE"), "{w}x{h}: {text}");
-            assert_eq!(text.contains("GROK WEEK ") && text.contains(" 38%  "), l.n_win >= 3, "{w}x{h}: {text}");
+            assert!(text.contains("CLAUDE 7D ") && text.contains(" 17%  ") && text.contains("FABLE"), "{w}x{h}: {text}");
+            assert_eq!(text.contains("GROK 7D ") && text.contains(" 38%  "), l.n_win >= 3, "{w}x{h}: {text}");
         }
         // narrow: the right column widens to the caption, the label column to the longest name
         let l = layout(&mut a, 40, 12);
-        assert_eq!((l.right_w, l.label_w, l.trace_w, l.n_win), (14, 11, 22, 2));
+        assert_eq!((l.right_w, l.label_w, l.trace_w, l.n_win), (14, 9, 22, 2));
     }
 
     #[test]
@@ -1602,7 +1602,7 @@ mod tests {
         assert!(a.lanes.is_empty() && layout(&mut a, 90, 28).lanes.is_empty());
         let text = draw(&mut a, 90, 28, 1001.0).join("\n");
         assert!(text.contains("● 3.4K TOK/MIN · 2 SESSIONS") && !text.contains("● CLAUDE") && !text.contains("● GROK"), "{text}");
-        assert!(text.contains("GROK WEEK "), "{text}");
+        assert!(text.contains("GROK 7D "), "{text}");
         for i in 0..2 {
             p["providers"][i].as_object_mut().unwrap().remove("activity");
         }

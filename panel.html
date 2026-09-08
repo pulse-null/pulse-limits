@@ -78,7 +78,7 @@
   // with more than one provider on the monitor every SESSION and WEEK window says whose it is (CLAUDE WEEK, GROK WEEK);
   // a window named after a model or a product (FABLE, GPT-5) keeps its own name
   const multi = () => (D.providers || []).length > 1;
-  const qualify = (name, w) => w.label === 'SESSION' || w.label === 'WEEK' ? Object.assign({}, w, { label: name + ' ' + w.label, prov: name, word: w.label }) : w;
+  const qualify = (name, w) => { if (w.label !== 'SESSION' && w.label !== 'WEEK') return w; const word = w.label === 'WEEK' ? '7D' : w.label; return Object.assign({}, w, { label: name + ' ' + word, prov: name, word }); };
   const sessionLabel = () => multi() && D.provider ? qualify(D.provider.toUpperCase(), session || { label: 'SESSION' }).label : 'SESSION';
   // one trace per provider with an activity reading of its own (providers[i].activity; absent counts as null), when
   // more than one has one: the active provider's lane follows `act`, the others the payload. Else the single trace, as ever.
