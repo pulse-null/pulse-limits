@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/crt.png" width="640" alt="PulseLimits: a phosphor-green patient monitor showing a heartbeat, the session percentage, week and model rings, and a 12-hour trend">
+  <img src="docs/banner.png" width="720" alt="PULSE LIMITS">
 </p>
-
-<h1 align="center">PulseLimits</h1>
 
 <p align="center">
   <a href="https://github.com/pulse-null/pulse-limits/releases"><img src="https://img.shields.io/github/v/release/pulse-null/pulse-limits?label=release&color=2ea44f" alt="latest release"></a>
@@ -17,6 +15,10 @@
 <p align="center">
   Your AI plan limits, Grok, Claude and Codex, in your status bar and in your terminal,
   as a retro patient monitor.
+</p>
+
+<p align="center">
+  <img src="docs/crt.png" width="640" alt="PulseLimits: a phosphor-green patient monitor showing a heartbeat, the session percentage, week and model rings, and a 12-hour trend">
 </p>
 
 <p align="center">
