@@ -26,6 +26,7 @@ use crate::util::{cache_dir, config_dir, mtime, now, read_trimmed, round_half_up
 pub const KNOWN: [&str; 3] = ["grok", "claude", "codex"]; // the name is also the CLI's process name
 pub const HISTORY_HOURS: i64 = 12; // trend strip depth
 pub const BACKOFF_SECS: i64 = 180; // after a 429: the quotas are small and shared across machines
+pub const PROBE_DELAY_SECS: u64 = if cfg!(test) { 0 } else { 6 }; // doctor waits this long after the plugin run before it probes an endpoint again
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
@@ -161,13 +162,17 @@ pub fn toggle(name: &str) -> Result<Vec<String>, String> {
 
 /// One provider's document. A reader that panics is reported, not fatal.
 pub fn run(name: &str, min_interval: i64) -> Doc {
-    let r = catch_unwind(AssertUnwindSafe(|| match name {
+    guarded(name, || match name {
         "claude" => claude::run(min_interval),
         "codex" => codex::run(min_interval),
         "grok" => grok::run(min_interval),
         _ => Doc::failed(name),
-    }));
-    r.unwrap_or_else(|_| Doc::failed(name))
+    })
+}
+
+/// The safety net around a reader: a panic becomes READER FAILED.
+fn guarded(name: &str, reader: impl FnOnce() -> Doc) -> Doc {
+    catch_unwind(AssertUnwindSafe(reader)).unwrap_or_else(|_| Doc::failed(name))
 }
 
 /// Doctor lines (ok/PROBLEM) about a provider's credentials and last reply, never the token.
@@ -180,12 +185,35 @@ pub fn doctor(name: &str, pstatus: &str) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Where doctor lines go while `testing::capture` runs on this thread.
+    static SINK: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One line of doctor output, to stdout.
+pub fn say(line: &str) {
+    #[cfg(test)]
+    {
+        let captured = SINK.with(|s| {
+            s.borrow_mut().as_mut().map(|buf| {
+                buf.extend_from_slice(line.as_bytes());
+                buf.push(b'\n');
+            })
+        });
+        if captured.is_some() {
+            return;
+        }
+    }
+    println!("{line}");
+}
+
 pub fn ok(msg: &str) {
-    println!("  ok       {msg}");
+    say(&format!("  ok       {msg}"));
 }
 
 pub fn bad(msg: &str) {
-    println!("  PROBLEM  {msg}");
+    say(&format!("  PROBLEM  {msg}"));
 }
 
 /// Drops every cache and backoff file, so the next run asks live (`pulse-limits reset`).
@@ -419,13 +447,18 @@ pub mod testing {
     /// Serves `body` with `code` to the next request and returns the base URL; `refused` gives
     /// a URL nothing listens on.
     pub fn serve(code: u16, body: &'static str) -> String {
+        serve_bytes(code, body.as_bytes())
+    }
+
+    pub fn serve_bytes(code: u16, body: &'static [u8]) -> String {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
         thread::spawn(move || {
             if let Ok((mut s, _)) = l.accept() {
                 let mut buf = [0u8; 4096];
                 let _ = s.read(&mut buf);
-                let _ = write!(s, "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = write!(s, "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(body);
             }
         });
         url
@@ -438,8 +471,113 @@ pub mod testing {
         url
     }
 
+    /// Everything `say`/`ok`/`bad` print while `f` runs on this thread, one line each.
+    pub fn capture(f: impl FnOnce()) -> String {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::SINK.with(|s| *s.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+        super::SINK.with(|s| *s.borrow_mut() = Some(vec![]));
+        f();
+        String::from_utf8(super::SINK.with(|s| s.borrow_mut().take().unwrap_or_default())).unwrap_or_default()
+    }
+
     /// Serial tests that share the process environment take this.
     pub static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A hermetic process for the tests that run whole commands: a `Scratch` plus HOME, the
+    /// CLIs' homes, Claude Code's config and transcripts, the lib folder and every provider's
+    /// base URL, all inside the scratch (the URLs on a closed port), and a PATH whose first
+    /// folder stands in for the commands a test must never reach: `security` (the real
+    /// Keychain), `open` and `pkill` (the bar), `pgrep` and `defaults` (this machine's
+    /// processes and SwiftBar settings). The original variables come back when it is dropped.
+    /// Hold `ENV` for as long as it lives.
+    pub struct Sandbox {
+        pub scratch: Scratch,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl Sandbox {
+        pub const VARS: [&'static str; 12] = [
+            "HOME",
+            "PATH",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_PROJECTS_DIR",
+            "GROK_HOME",
+            "CODEX_HOME",
+            "GROK_CLI_CHAT_PROXY_BASE_URL",
+            "PULSE_CLAUDE_USAGE_URL",
+            "PULSE_LIB",
+            "COLORTERM",
+            "XDG_CACHE_HOME",
+            "XDG_CONFIG_HOME",
+        ];
+
+        pub fn new(tag: &str) -> Sandbox {
+            let saved = Self::VARS.iter().map(|v| (*v, std::env::var_os(v))).collect();
+            let scratch = Scratch::new(tag);
+            let root = scratch.0.clone();
+            let home = root.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let bin = root.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let real = |cmd: &str| crate::util::which(cmd).unwrap_or_else(|| panic!("{cmd} not on PATH"));
+            for (name, target) in [("security", "false"), ("pgrep", "false"), ("defaults", "false"), ("open", "true"), ("pkill", "true")] {
+                std::os::unix::fs::symlink(real(target), bin.join(name)).unwrap();
+            }
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths = vec![bin.clone()];
+            paths.extend(std::env::split_paths(&path));
+            std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude-config"));
+            std::env::set_var("CLAUDE_PROJECTS_DIR", home.join("projects"));
+            std::env::set_var("GROK_HOME", home.join(".grok"));
+            std::env::set_var("CODEX_HOME", home.join(".codex"));
+            std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", refused());
+            std::env::set_var("PULSE_CLAUDE_USAGE_URL", refused());
+            std::env::set_var("PULSE_LIB", root.join("lib"));
+            std::env::remove_var("COLORTERM");
+            let s = Sandbox { scratch, saved };
+            s.codex_base(&refused());
+            s
+        }
+
+        pub fn home(&self) -> std::path::PathBuf {
+            self.scratch.0.join("home")
+        }
+
+        /// Claude Code's credentials file with a claude.ai login.
+        pub fn claude_login(&self) -> std::path::PathBuf {
+            let f = self.home().join("claude-config").join(".credentials.json");
+            crate::util::write_atomic(
+                &f,
+                br#"{"claudeAiOauth":{"accessToken":"fixture-token","subscriptionType":"max","rateLimitTier":"default_claude_max_20x","expiresAt":4102444800000}}"#,
+            )
+            .unwrap();
+            f
+        }
+
+        /// Codex's config.toml sending the CLI through `base` (the usage URL follows it).
+        pub fn codex_base(&self, base: &str) {
+            crate::util::write_atomic(&self.home().join(".codex").join("config.toml"), format!("chatgpt_base_url = \"{base}/backend-api\"\n").as_bytes())
+                .unwrap();
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     /// A scratch XDG cache/config for one test (removed when dropped).
     pub struct Scratch(pub std::path::PathBuf);
@@ -550,5 +688,126 @@ mod tests {
         assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "\n");
         assert!(enabled().is_empty());
         assert!(toggle("gemini").is_err());
+    }
+
+    #[test]
+    fn doctor_lines_go_to_the_sink_while_captured() {
+        let out = testing::capture(|| {
+            say("section");
+            ok("fine");
+            bad("broken");
+        });
+        assert_eq!(out, "section\n  ok       fine\n  PROBLEM  broken\n");
+        assert_eq!(testing::capture(|| {}), "");
+        say("after the capture: stdout again"); // no sink: must not panic
+    }
+
+    #[test]
+    fn a_panicking_reader_is_reader_failed() {
+        let d = guarded("codex", || panic!("boom"));
+        assert_eq!((d.provider.as_str(), d.status.as_str(), d.fetched, d.windows.len()), ("codex", "READER FAILED", 0, 0));
+        assert_eq!(d.hint, "THE CODEX READER PRINTED NO DOCUMENT. RUN: pulse-limits doctor");
+        let d = guarded("grok", Doc::none);
+        assert_eq!(d.status, "NO PROVIDER SELECTED");
+        // an unknown name never reaches a reader
+        assert_eq!(run("gemini", 0).status, "READER FAILED");
+        assert_eq!(testing::capture(|| doctor("gemini", "")), "");
+        assert!(!known("gemini"));
+    }
+
+    #[test]
+    fn logins_are_detected_from_the_cli_files() {
+        let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = testing::Sandbox::new("detect");
+        assert!(detected().is_empty(), "an empty home has no login");
+        assert!(enabled().is_empty());
+        fs::create_dir_all(s.home().join(".grok")).unwrap();
+        fs::write(s.home().join(".grok").join("auth.json"), "{}").unwrap();
+        assert_eq!(detected(), vec!["grok"]);
+        fs::create_dir_all(s.home().join(".codex")).unwrap();
+        fs::write(s.home().join(".codex").join("auth.json"), "{}").unwrap();
+        s.claude_login();
+        assert_eq!(detected(), vec!["grok", "claude", "codex"]);
+        assert_eq!(enabled(), detected());
+        // an unknown name in the file is kept by toggle but not enabled
+        write_atomic(&config_dir().join("providers"), b"gemini\ncodex\n").unwrap();
+        assert_eq!(enabled(), vec!["codex"]);
+        assert_eq!(toggle("grok").unwrap(), vec!["gemini", "codex", "grok"]);
+        assert_eq!(enabled(), vec!["codex", "grok"]);
+    }
+
+    #[test]
+    fn reset_drops_caches_and_backoffs_only() {
+        let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = testing::Scratch::new("reset");
+        for f in ["usage-claude.json", "usage.json", "backoff-grok", "backoff", "last-reply-codex.json", "history-claude.tsv", "plan-grok", "panel.url"] {
+            fs::write(s.cache().join(f), "x").unwrap();
+        }
+        reset();
+        let left: Vec<String> = {
+            let mut v: Vec<String> = fs::read_dir(s.cache()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(left, vec!["history-claude.tsv", "last-reply-codex.json", "panel.url", "plan-grok"]);
+        reset(); // nothing left to drop
+        std::env::set_var("XDG_CACHE_HOME", s.0.join("nowhere"));
+        reset(); // no cache folder at all
+    }
+
+    #[test]
+    fn doctor_digests_cover_every_shape() {
+        let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = testing::Scratch::new("digest");
+        let st = Store::new("codex");
+        let digest = |c: &Value| json!({ "keys": c.as_object().map(|m| m.len()).unwrap_or(0) });
+        // nothing at all
+        assert_eq!(testing::capture(|| st.doctor_digests(digest)), "  PROBLEM  no reply cached yet\n");
+        // a failed attempt with an HTML body, and a cache that is not JSON
+        st.get(&testing::serve(502, "<html>bad gateway</html>"), &[]);
+        fs::write(&st.cache, "not json").unwrap();
+        let out = testing::capture(|| st.doctor_digests(digest));
+        assert!(out.contains("  ok       last attempt: {\"http\":502,\"at\":\""), "{out}");
+        assert!(out.contains("\"body\":\"\\\"<html>bad gateway</html>\\\"\"}"), "{out}");
+        assert!(out.ends_with("  ok       cached reply: not JSON\n"), "{out}");
+        // a JSON error reply and a good cache
+        st.get(&testing::serve(401, "{\"error\":{\"type\":\"auth\"},\"detail\":\"x\"}"), &[]);
+        fs::write(&st.cache, "{\"a\":1,\"b\":2}").unwrap();
+        let out = testing::capture(|| st.doctor_digests(digest));
+        assert!(out.contains("\"body\":{\"keys\":\"error,detail\",\"error\":{\"type\":\"auth\"}}"), "{out}");
+        assert!(out.ends_with("  ok       cached reply (16666 min old): {\"keys\":2}\n"), "{out}");
+        // a last reply that is not JSON at all is skipped
+        fs::write(&st.last_reply, "garbage").unwrap();
+        assert_eq!(testing::capture(|| st.doctor_digests(digest)), "  ok       cached reply (16666 min old): {\"keys\":2}\n");
+        drop(s);
+    }
+
+    #[test]
+    fn bodies_that_are_not_text() {
+        let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = testing::Scratch::new("bytes");
+        let st = Store::new("grok");
+        let (code, body) = st.get(&testing::serve_bytes(200, b"\xff\xfe\x00"), &[]);
+        assert_eq!((code, body.len()), (200, 3));
+        assert_eq!(fs::read_to_string(&st.last_reply).unwrap(), format!("{{\"http\": 200, \"at\": {}, \"body\": \"\"}}\n", st.now));
+        drop(s);
+    }
+
+    #[test]
+    fn history_keeps_twelve_hours_and_skips_junk() {
+        let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = testing::Scratch::new("history");
+        let mut st = Store::new("claude");
+        let old = st.now - HISTORY_HOURS * 3600 - 1;
+        let kept = st.now - HISTORY_HOURS * 3600 + 60;
+        fs::write(&st.history, format!("{old}\t50\t1\n{kept}\t40\t2\nnot a row\n\t7\t8\n")).unwrap();
+        assert_eq!(st.history_rows(), vec![(old, 50), (kept, 40)]);
+        st.accept(b"{}");
+        let d = st.emit("", vec![Window { label: "WEEK".into(), pct: json!(9.5), resets: None }], Value::Null);
+        assert_eq!(d.history, vec![(kept, 40), (st.now, 10)]); // no SESSION: the first window is the trend
+        assert_eq!(fs::read_to_string(&st.history).unwrap(), format!("{kept}\t40\t2\n{}\t10\t10\n", st.now));
+        assert_eq!(d.session().map(|w| w.label.as_str()), Some("WEEK"));
+        assert_eq!(d.window("SESSION"), None);
+        drop(s);
     }
 }

@@ -5,10 +5,18 @@
 use serde_json::{json, Value};
 
 use crate::keychain;
-use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
+use crate::providers::{bad, ok, say, Doc, Store, Window, BACKOFF_SECS, PROBE_DELAY_SECS};
 use crate::util::{env_path, hhmmss, is_macos, iso_utc, local_offset, upper};
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+
+/// The endpoint, or the one PULSE_CLAUDE_USAGE_URL names (the tests' local server).
+fn usage_url() -> String {
+    match std::env::var("PULSE_CLAUDE_USAGE_URL") {
+        Ok(u) if !u.trim().is_empty() => u.trim().to_string(),
+        _ => USAGE_URL.into(),
+    }
+}
 
 pub struct Login {
     pub token: String,
@@ -139,7 +147,7 @@ pub fn run(min_interval: i64) -> Doc {
     }
     let label = plan_label(login.as_ref());
     if !token.is_empty() && st.due(min_interval) {
-        fetch(&mut st, USAGE_URL, &token);
+        fetch(&mut st, &usage_url(), &token);
     }
     let (windows, credits) = st.cached().map(|c| (windows(&c), credits(&c))).unwrap_or((vec![], Value::Null));
     st.emit(&label, windows, credits)
@@ -220,18 +228,18 @@ pub fn doctor(pstatus: &str) {
     }
     if tok.is_empty() {
         bad(&format!("no claude.ai login found anywhere on this {}.", if is_macos() { "Mac" } else { "machine" }));
-        println!("           In Claude Code run /status: it names the login method and, if set, the config dir.");
+        say("           In Claude Code run /status: it names the login method and, if set, the config dir.");
         if is_macos() {
-            println!("           If Claude Code uses CLAUDE_CONFIG_DIR, its Keychain entry has a different name; list them with:");
-            println!("             security dump-keychain | grep -o '\"Claude Code-credentials[^\"]*\"' | sort -u");
-            println!("           and pin the right one:  pulse-limits keychain 'Claude Code-credentials-...'");
+            say("           If Claude Code uses CLAUDE_CONFIG_DIR, its Keychain entry has a different name; list them with:");
+            say("             security dump-keychain | grep -o '\"Claude Code-credentials[^\"]*\"' | sort -u");
+            say("           and pin the right one:  pulse-limits keychain 'Claude Code-credentials-...'");
         } else {
             let d = env_path("CLAUDE_CONFIG_DIR").unwrap_or_else(|| crate::util::home().join(".claude"));
-            println!("           On Linux Claude Code writes {}/.credentials.json when you log in", d.display());
-            println!("           with a claude.ai account: run 'claude' once. An API-key login writes no usable token.");
+            say(&format!("           On Linux Claude Code writes {}/.credentials.json when you log in", d.display()));
+            say("           with a claude.ai account: run 'claude' once. An API-key login writes no usable token.");
         }
     }
-    println!("  usage api");
+    say("  usage api");
     if tok.is_empty() {
         bad("skipped (no token)");
     } else if pstatus.is_empty() {
@@ -239,9 +247,9 @@ pub fn doctor(pstatus: &str) {
     } else if st.backing_off() {
         ok(&format!("not probed: backing off after a 429 until {}", hhmmss(st.backoff_until(), local_offset())));
     } else {
-        std::thread::sleep(std::time::Duration::from_secs(6));
+        std::thread::sleep(std::time::Duration::from_secs(PROBE_DELAY_SECS));
         let auth = format!("Bearer {tok}");
-        let (code, body) = crate::providers::http_get(USAGE_URL, &[("Authorization", &auth), ("anthropic-beta", "oauth-2025-04-20")]);
+        let (code, body) = crate::providers::http_get(&usage_url(), &[("Authorization", &auth), ("anthropic-beta", "oauth-2025-04-20")]);
         let text = String::from_utf8_lossy(&body).replace('\n', " ");
         match code {
             200 => match serde_json::from_slice::<Value>(&body) {
@@ -253,7 +261,7 @@ pub fn doctor(pstatus: &str) {
             c => bad(&format!("HTTP {c}: {}", text.chars().take(240).collect::<String>())),
         }
     }
-    println!("  last reply (shape digest)");
+    say("  last reply (shape digest)");
     st.doctor_digests(|c| {
         let limits: Vec<Value> = c
             .get("limits")

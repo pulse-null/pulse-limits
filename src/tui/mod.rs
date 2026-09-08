@@ -23,14 +23,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::backend::Backend;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::canvas::{Canvas, Painter, Shape};
 use ratatui::widgets::{Block, Clear, LineGauge, Paragraph, Sparkline, SparklineBar};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{Frame, Terminal};
 use serde_json::{Map, Value};
 
 use crate::activity;
@@ -104,50 +105,83 @@ impl Feed {
         let panel_url = cache_dir().join("panel.url");
         let shared = Arc::new(Mutex::new(Shared::default()));
         let poke = Arc::new(AtomicBool::new(false));
-        let (s, p, url, prov) = (shared.clone(), poke.clone(), panel_url.clone(), provider.clone());
-        thread::spawn(move || {
-            let stale = |url: &Path| prov.is_some() || age_of(url).is_none_or(|a| a > PAYLOAD_EVERY);
-            let publish = |v: Value| {
-                let mut s = s.lock().unwrap();
-                s.payload = Some(v);
-                s.version += 1;
-            };
-            let mut seen_mtime = None;
-            let mut next_panel = Instant::now();
-            // a fresh panel.url means a bar is feeding it: no need to build the payload ourselves yet
-            let mut next_payload = if stale(&url) { Instant::now() } else { Instant::now() + PAYLOAD_EVERY };
-            let mut next_activity = Instant::now();
-            loop {
-                let poked = p.swap(false, Ordering::Relaxed);
-                if prov.is_none() && (poked || Instant::now() >= next_panel) {
-                    next_panel = Instant::now() + PANEL_EVERY;
-                    let m = mtime_f(&url);
-                    if m.is_some() && (poked || m != seen_mtime) {
-                        seen_mtime = m;
-                        if let Some(v) = read_panel_url(&url) {
-                            publish(v);
-                        }
-                    }
-                }
-                if poked && stale(&url) {
-                    next_payload = Instant::now();
-                }
-                if Instant::now() >= next_payload {
-                    next_payload = Instant::now() + PAYLOAD_EVERY;
-                    let b = payload::build(PANEL_INTERVAL, prov.is_none(), prov.as_deref());
-                    publish(b.payload);
-                }
-                if Instant::now() >= next_activity {
-                    next_activity = Instant::now() + ACTIVITY_EVERY;
-                    let a = activity::measure().to_json();
-                    let mut s = s.lock().unwrap();
-                    s.activity = Some(a);
-                    s.version += 1;
-                }
-                thread::sleep(Duration::from_millis(250));
-            }
+        let mut poller = Poller::new(shared.clone(), poke.clone(), panel_url.clone(), provider.clone());
+        thread::spawn(move || loop {
+            poller.tick();
+            thread::sleep(Duration::from_millis(250));
         });
         Feed { shared, poke, panel_url, provider }
+    }
+}
+
+/// The feed thread's state: what it does every 250 ms is `tick`.
+struct Poller {
+    shared: Arc<Mutex<Shared>>,
+    poke: Arc<AtomicBool>,
+    url: PathBuf,
+    prov: Option<String>,
+    seen_mtime: Option<f64>,
+    next_panel: Instant,
+    next_payload: Instant,
+    next_activity: Instant,
+}
+
+impl Poller {
+    fn new(shared: Arc<Mutex<Shared>>, poke: Arc<AtomicBool>, url: PathBuf, prov: Option<String>) -> Poller {
+        let mut p = Poller {
+            shared,
+            poke,
+            url,
+            prov,
+            seen_mtime: None,
+            next_panel: Instant::now(),
+            next_payload: Instant::now(),
+            next_activity: Instant::now(),
+        };
+        // a fresh panel.url means a bar is feeding it: no need to build the payload ourselves yet
+        if !p.stale() {
+            p.next_payload = Instant::now() + PAYLOAD_EVERY;
+        }
+        p
+    }
+
+    fn stale(&self) -> bool {
+        self.prov.is_some() || age_of(&self.url).is_none_or(|a| a > PAYLOAD_EVERY)
+    }
+
+    fn publish(&self, v: Value) {
+        let mut s = self.shared.lock().unwrap();
+        s.payload = Some(v);
+        s.version += 1;
+    }
+
+    fn tick(&mut self) {
+        let poked = self.poke.swap(false, Ordering::Relaxed);
+        if self.prov.is_none() && (poked || Instant::now() >= self.next_panel) {
+            self.next_panel = Instant::now() + PANEL_EVERY;
+            let m = mtime_f(&self.url);
+            if m.is_some() && (poked || m != self.seen_mtime) {
+                self.seen_mtime = m;
+                if let Some(v) = read_panel_url(&self.url) {
+                    self.publish(v);
+                }
+            }
+        }
+        if poked && self.stale() {
+            self.next_payload = Instant::now();
+        }
+        if Instant::now() >= self.next_payload {
+            self.next_payload = Instant::now() + PAYLOAD_EVERY;
+            let b = payload::build(PANEL_INTERVAL, self.prov.is_none(), self.prov.as_deref());
+            self.publish(b.payload);
+        }
+        if Instant::now() >= self.next_activity {
+            self.next_activity = Instant::now() + ACTIVITY_EVERY;
+            let a = activity::measure().to_json();
+            let mut s = self.shared.lock().unwrap();
+            s.activity = Some(a);
+            s.version += 1;
+        }
     }
 }
 
@@ -879,35 +913,53 @@ fn render_help(f: &mut Frame, app: &App, p: &Palette) {
 }
 
 // ---- run --------------------------------------------------------------------------------------
-fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
+/// A key press; true means quit.
+fn key(app: &mut App, k: KeyEvent) -> bool {
+    if k.kind != KeyEventKind::Release {
+        match k.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => return true,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return true,
+            KeyCode::Char('t') | KeyCode::Char('T') => app.theme = (app.theme + 1) % THEMES.len(),
+            KeyCode::Char('r') | KeyCode::Char('R') => app.feed.poke.store(true, Ordering::Relaxed),
+            KeyCode::Char('?') => app.help = !app.help,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// One frame: fold in what the feed published, lay out for the terminal's size, advance the
+/// trace by `dt` seconds and draw at time `t`.
+fn frame<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, app: &mut App, dt: f64, t: f64) -> io::Result<()> {
+    app.apply();
+    let size = terminal.size()?;
+    let l = layout(app, size.width, size.height);
+    let bpm = app.bpm();
+    app.ecg.step(dt, bpm);
+    terminal.draw(|f| render(f, app, &l, t))?;
+    Ok(())
+}
+
+/// Frames at ~20 fps until q; `next_event` waits up to the given time for a terminal event.
+fn run_loop<B: Backend<Error = io::Error>>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    mut next_event: impl FnMut(Duration) -> io::Result<Option<Event>>,
+) -> io::Result<()> {
     let mut last = Instant::now();
     let mut next_frame = Instant::now();
     loop {
-        if event::poll(next_frame.saturating_duration_since(Instant::now()))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind != KeyEventKind::Release {
-                    match k.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(()),
-                        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-                        KeyCode::Char('t') | KeyCode::Char('T') => app.theme = (app.theme + 1) % THEMES.len(),
-                        KeyCode::Char('r') | KeyCode::Char('R') => app.feed.poke.store(true, Ordering::Relaxed),
-                        KeyCode::Char('?') => app.help = !app.help,
-                        _ => {}
-                    }
-                }
-            } // a resize needs nothing: draw() measures the terminal every frame
+        // a resize needs nothing: draw() measures the terminal every frame
+        if let Some(Event::Key(k)) = next_event(next_frame.saturating_duration_since(Instant::now()))? {
+            if key(app, k) {
+                return Ok(());
+            }
         }
         if Instant::now() >= next_frame {
             next_frame = Instant::now() + FRAME;
             let dt = last.elapsed().as_secs_f64().min(0.1);
             last = Instant::now();
-            app.apply();
-            let size = terminal.size()?;
-            let l = layout(app, size.width, size.height);
-            let bpm = app.bpm();
-            app.ecg.step(dt, bpm);
-            let t = now();
-            terminal.draw(|f| render(f, app, &l, t))?;
+            frame(terminal, app, dt, now())?;
         }
     }
 }
@@ -920,8 +972,8 @@ fn usage() -> String {
     )
 }
 
-/// `pulse-limits tui [provider] [--theme NAME]`; returns the exit code.
-pub fn run(args: &[String]) -> i32 {
+/// The command line: (provider, theme index), or the exit code to leave with.
+fn parse(args: &[String]) -> Result<(Option<String>, Option<usize>), i32> {
     let mut provider: Option<String> = None;
     let mut theme: Option<usize> = None;
     let mut args = args.iter();
@@ -929,52 +981,73 @@ pub fn run(args: &[String]) -> i32 {
         match a.as_str() {
             "-h" | "--help" => {
                 println!("{}", usage());
-                return 0;
+                return Err(0);
             }
             "--theme" => match args.next().and_then(|n| THEMES.iter().position(|t| t == n)) {
                 Some(i) => theme = Some(i),
                 None => {
                     eprintln!("pulse-limits tui: unknown theme (one of: {})", THEMES.join(" "));
-                    return 64;
+                    return Err(64);
                 }
             },
             s if s.starts_with("--theme=") => match THEMES.iter().position(|t| *t == &s[8..]) {
                 Some(i) => theme = Some(i),
                 None => {
                     eprintln!("pulse-limits tui: unknown theme (one of: {})", THEMES.join(" "));
-                    return 64;
+                    return Err(64);
                 }
             },
             s if s.starts_with('-') => {
                 eprintln!("pulse-limits tui: unknown option {s}\n{}", usage());
-                return 64;
+                return Err(64);
             }
             s => {
                 if !providers::known(s) {
                     eprintln!("pulse-limits tui: unknown provider {s} (one of: {})", providers::KNOWN.join(" "));
-                    return 64;
+                    return Err(64);
                 }
                 provider = Some(s.to_string());
             }
         }
     }
-    let mut app = App {
-        feed: Feed::start(provider),
-        ecg: Ecg::default(),
-        d: Map::new(),
-        session: None,
-        others: vec![],
-        session_pct: 0,
-        alive: false,
-        act: None,
-        est: None,
-        seen: 0,
-        theme: theme.unwrap_or_else(saved_theme),
-        help: false,
-        truecolor: matches!(std::env::var("COLORTERM").as_deref(), Ok("truecolor") | Ok("24bit")),
-        tz: local_offset(),
-    };
-    app.d.insert("status".into(), Value::String("NO DATA".into()));
+    Ok((provider, theme))
+}
+
+impl App {
+    /// The screen before the first payload arrives: NO DATA, the given theme.
+    fn new(feed: Feed, theme: usize) -> App {
+        let mut app = App {
+            feed,
+            ecg: Ecg::default(),
+            d: Map::new(),
+            session: None,
+            others: vec![],
+            session_pct: 0,
+            alive: false,
+            act: None,
+            est: None,
+            seen: 0,
+            theme,
+            help: false,
+            truecolor: matches!(std::env::var("COLORTERM").as_deref(), Ok("truecolor") | Ok("24bit")),
+            tz: local_offset(),
+        };
+        app.d.insert("status".into(), Value::String("NO DATA".into()));
+        app
+    }
+}
+
+/// `pulse-limits tui [provider] [--theme NAME]`; returns the exit code.
+pub fn run(args: &[String]) -> i32 {
+    match parse(args) {
+        Ok((provider, theme)) => launch(provider, theme),
+        Err(code) => code,
+    }
+}
+
+/// The terminal session: needs a real terminal, so nothing in here runs under `cargo test`.
+fn launch(provider: Option<String>, theme: Option<usize>) -> i32 {
+    let mut app = App::new(Feed::start(provider), theme.unwrap_or_else(saved_theme));
     let mut terminal = match ratatui::try_init() {
         // raw mode, alternate screen, and a panic hook that restores both
         Ok(t) => t,
@@ -983,7 +1056,7 @@ pub fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let result = run_loop(&mut terminal, &mut app);
+    let result = run_loop(&mut terminal, &mut app, |wait| if event::poll(wait)? { event::read().map(Some) } else { Ok(None) });
     ratatui::restore();
     if let Err(e) = result {
         eprintln!("pulse-limits tui: {e}");

@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::providers::codex::jwt_claims;
-use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
+use crate::providers::{bad, ok, say, Doc, Store, Window, BACKOFF_SECS, PROBE_DELAY_SECS};
 use crate::util::{
     cache_dir, env_path, epoch_of, hhmmss, home, is_executable, is_macos, iso_utc, local_offset, mtime, read_trimmed, upper, which, write_atomic,
 };
@@ -371,7 +371,7 @@ pub fn doctor(pstatus: &str) {
         None => ok("grok CLI not found (only needed to log in)"),
     }
     ok(&format!("usage url: {}", billing_url(&base)));
-    println!("  usage api");
+    say("  usage api");
     if auth.token.is_empty() {
         bad("skipped (no usable token)");
     } else if pstatus.is_empty() {
@@ -379,7 +379,7 @@ pub fn doctor(pstatus: &str) {
     } else if st.backing_off() {
         ok(&format!("not probed: backing off after a 429 until {}", hhmmss(st.backoff_until(), local_offset())));
     } else {
-        std::thread::sleep(Duration::from_secs(6));
+        std::thread::sleep(Duration::from_secs(PROBE_DELAY_SECS));
         let bearer = format!("Bearer {}", auth.token);
         let (code, body) = crate::providers::http_get(&billing_url(&base), &headers(&bearer));
         let text = String::from_utf8_lossy(&body).replace('\n', " ");
@@ -395,7 +395,7 @@ pub fn doctor(pstatus: &str) {
             c => bad(&format!("HTTP {c}: {}", text.chars().take(240).collect::<String>())),
         }
     }
-    println!("  last reply (shape digest)");
+    say("  last reply (shape digest)");
     st.doctor_digests(digest);
 }
 

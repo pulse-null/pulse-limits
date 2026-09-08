@@ -10,7 +10,7 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
 use serde_json::{json, Value};
 
-use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
+use crate::providers::{bad, ok, say, Doc, Store, Window, BACKOFF_SECS, PROBE_DELAY_SECS};
 use crate::util::{env_path, hhmmss, home, is_macos, iso_utc, local_offset, upper, which};
 
 pub const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -264,7 +264,7 @@ pub fn doctor(pstatus: &str) {
         None => ok("codex CLI not on PATH (only needed to log in)"),
     }
     ok(&format!("usage url: {url}"));
-    println!("  usage api");
+    say("  usage api");
     if auth.token.is_empty() {
         bad("skipped (no usable token)");
     } else if pstatus.is_empty() {
@@ -272,7 +272,7 @@ pub fn doctor(pstatus: &str) {
     } else if st.backing_off() {
         ok(&format!("not probed: backing off after a 429 until {}", hhmmss(st.backoff_until(), local_offset())));
     } else {
-        std::thread::sleep(std::time::Duration::from_secs(6));
+        std::thread::sleep(std::time::Duration::from_secs(PROBE_DELAY_SECS));
         let bearer = format!("Bearer {}", auth.token);
         let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
         if !auth.account.is_empty() {
@@ -294,7 +294,7 @@ pub fn doctor(pstatus: &str) {
             c => bad(&format!("HTTP {c}: {}", text.chars().take(240).collect::<String>())),
         }
     }
-    println!("  last reply (shape digest)");
+    say("  last reply (shape digest)");
     st.doctor_digests(|c| {
         let extra: Vec<Value> =
             c.get("additional_rate_limits").and_then(Value::as_array).map(|a| a.iter().map(|e| e["limit_name"].clone()).collect()).unwrap_or_default();

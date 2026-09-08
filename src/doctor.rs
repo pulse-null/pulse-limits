@@ -8,14 +8,19 @@ use serde_json::Value;
 
 use crate::bar::{plugin_dir, waybar_dir, waybar_module, PLUGIN};
 use crate::payload::{self, PANEL_INTERVAL};
-use crate::providers::{self, bad, ok};
+use crate::providers::{self, bad, ok, say};
 use crate::util::{command_output, is_macos, iso_utc, local_offset, local_stamp, now, process_running, which};
 
 pub fn run(lib: &Path, version: &str) -> i32 {
-    println!("PulseLimits doctor  ({})", local_stamp(now(), local_offset()));
-    println!("system");
+    run_on(lib, version, is_macos())
+}
+
+/// The report for one platform: `macos` picks the SwiftBar or the Waybar chain.
+fn run_on(lib: &Path, version: &str, macos: bool) -> i32 {
+    say(&format!("PulseLimits doctor  ({})", local_stamp(now(), local_offset())));
+    say("system");
     let arch = command_output("uname", &["-m"]).unwrap_or_default();
-    if is_macos() {
+    if macos {
         ok(&format!("macOS {} {arch}, pulse-limits {version}", command_output("sw_vers", &["-productVersion"]).unwrap_or_default()));
         if command_output("readlink", &["-f", "/"]).is_some() {
             ok("readlink -f works");
@@ -25,16 +30,16 @@ pub fn run(lib: &Path, version: &str) -> i32 {
     } else {
         ok(&format!("{} {arch}, pulse-limits {version}", command_output("uname", &["-sr"]).unwrap_or_default()));
     }
-    let tools: &[&str] = if is_macos() { &["security", "pgrep"] } else { &["pgrep", "xdg-open"] };
+    let tools: &[&str] = if macos { &["security", "pgrep"] } else { &["pgrep", "xdg-open"] };
     for t in tools {
         match which(t) {
             Some(p) => ok(&format!("{t}: {}", p.display())),
             None => bad(&format!("{t} is missing")),
         }
     }
-    println!("files");
+    say("files");
     ok(&format!("lib: {}", lib.display()));
-    let files: &[&str] = if is_macos() {
+    let files: &[&str] = if macos {
         &[PLUGIN, "panel.html", "bin/pulse-limits", "bin/pulse-popover", "bin/pulse-menubar"]
     } else {
         &[PLUGIN, "panel.html", "bin/pulse-limits"]
@@ -46,8 +51,8 @@ pub fn run(lib: &Path, version: &str) -> i32 {
             bad(&format!("{f} missing (run ./build.sh for bin/*)"));
         }
     }
-    if is_macos() {
-        println!("swiftbar");
+    if macos {
+        say("swiftbar");
         if crate::bar::swiftbar_installed() {
             ok(&format!(
                 "SwiftBar {} installed",
@@ -68,7 +73,7 @@ pub fn run(lib: &Path, version: &str) -> i32 {
             Err(_) => bad(&format!("plugin not linked in {} (run: pulse-limits bar on)", plugin_dir().display())),
         }
     } else {
-        println!("waybar");
+        say("waybar");
         if process_running("waybar") {
             ok("waybar running");
         } else {
@@ -92,7 +97,7 @@ pub fn run(lib: &Path, version: &str) -> i32 {
             Err(_) => bad(&format!("no Waybar config at {}", waybar_dir().display())),
         }
     }
-    println!("providers");
+    say("providers");
     let enabled = providers::enabled();
     if enabled.is_empty() {
         bad("none enabled: pulse-limits provider claude");
@@ -104,7 +109,7 @@ pub fn run(lib: &Path, version: &str) -> i32 {
         "CLI running now: {} (the menu bar follows the first enabled one that runs)",
         if running.is_empty() { "none".to_string() } else { running.join(" ") }
     ));
-    println!("plugin run");
+    say("plugin run");
     let b = payload::build(PANEL_INTERVAL, true, None);
     ok(&format!("menu bar shows: {}", if b.active.is_empty() { "nothing" } else { &b.active }));
     for d in b.docs.iter().filter(|d| enabled.contains(&d.provider)) {
@@ -116,11 +121,11 @@ pub fn run(lib: &Path, version: &str) -> i32 {
         }
     }
     for p in &enabled {
-        println!("provider {p}");
+        say(&format!("provider {p}"));
         let pstatus = b.docs.iter().find(|d| &d.provider == p).map(|d| d.status.clone()).unwrap_or_default();
         providers::doctor(p, &pstatus);
     }
-    println!("activity");
+    say("activity");
     ok(&b.payload.get("activity").map(Value::to_string).unwrap_or_default());
     0
 }

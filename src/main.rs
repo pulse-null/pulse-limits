@@ -18,6 +18,7 @@ mod waybar;
 
 use std::env;
 use std::fs;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -51,7 +52,13 @@ const HELP: &str = "pulse-limits: your Claude and Codex plan limits as a retro p
 
 fn main() {
     let lib = util::lib_dir(); // from the invoked path and the PATH we were started with, before it is pinned
-                               // SwiftBar hands the plugin launchd's PATH: pin our own. Waybar (or a Nix wrapper) hands us one worth keeping.
+    pin_path();
+    let args: Vec<String> = env::args().skip(1).collect();
+    std::process::exit(dispatch(&lib, &args));
+}
+
+/// SwiftBar hands the plugin launchd's PATH: pin our own. Waybar (or a Nix wrapper) hands us one worth keeping.
+fn pin_path() {
     let path = env::var("PATH").unwrap_or_default();
     env::set_var(
         "PATH",
@@ -61,13 +68,16 @@ fn main() {
             format!("{path}{}/usr/local/bin:/usr/bin:/bin", if path.is_empty() { "" } else { ":" })
         },
     );
-    let args: Vec<String> = env::args().skip(1).collect();
+}
+
+/// Runs one command line (without the program name) and returns its exit code.
+fn dispatch(lib: &Path, args: &[String]) -> i32 {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let arg = args.get(1);
-    let code = match cmd {
-        "install" => bar::install(&lib),
-        "uninstall" => bar::uninstall(&lib),
-        "bar" => bar::bar(&lib, arg),
+    match cmd {
+        "install" => bar::install(lib),
+        "uninstall" => bar::uninstall(lib),
+        "bar" => bar::bar(lib, arg),
         "theme" => match payload::set_theme(arg.map(String::as_str).unwrap_or("")) {
             Ok(()) => {
                 bar::refresh();
@@ -100,7 +110,7 @@ fn main() {
             providers::reset();
             0
         }
-        "open" => open::open(&lib),
+        "open" => open::open(lib),
         "status" => {
             let b = payload::build(PANEL_INTERVAL, true, None);
             println!("{}", serde_json::to_string_pretty(&b.payload).unwrap_or_default());
@@ -113,7 +123,7 @@ fn main() {
         }
         "swiftbar" => {
             let b = payload::build(BAR_INTERVAL, true, None);
-            print!("{}", swiftbar::render(&b, &lib));
+            print!("{}", swiftbar::render(&b, lib));
             0
         }
         "waybar" => {
@@ -137,16 +147,16 @@ fn main() {
                 64
             }
         },
-        "doctor" => doctor::run(&lib, VERSION),
+        "doctor" => doctor::run(lib, VERSION),
         "raw" => raw(arg),
         "keychain" => keychain_pin(arg),
         "version" => {
             println!("{VERSION}");
             0
         }
-        "update" => bar::update(&lib, VERSION),
+        "update" => bar::update(lib, VERSION),
         "tui" => tui::run(&args[1..]),
-        "claude" | "codex" | "grok" => tui::run(&args),
+        "claude" | "codex" | "grok" => tui::run(args),
         "help" | "-h" | "--help" => {
             println!("{HELP}");
             0
@@ -155,8 +165,7 @@ fn main() {
             eprintln!("pulse-limits: unknown command '{other}' (try: pulse-limits help)");
             64
         }
-    };
-    std::process::exit(code);
+    }
 }
 
 /// A provider's last good reply, else its last attempt.
