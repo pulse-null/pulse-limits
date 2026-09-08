@@ -86,7 +86,7 @@ mkdir -p "$PD"
 defaults write com.ameba.SwiftBar PluginDirectory "$PD"
 rm -f "$PD/$OLD_PLUGIN"
 ln -sfn "$DIR/$PLUGIN" "$PD/$PLUGIN"
-chmod +x "$DIR/$PLUGIN" "$DIR/open-monitor.sh"
+chmod +x "$DIR/$PLUGIN" "$DIR/open-monitor.sh" "$DIR"/providers/*.sh
 say "Linked $PD/$PLUGIN"
 
 if ! security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; then

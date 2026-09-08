@@ -71,11 +71,19 @@
     } catch (e) { return null; }
   }
   const D = { plan: '', source: '', fetched: 0, status: 'NO DATA', hint: '', windows: [], history: [],
-              credits: null, activity: null, theme: 'crt' };
+              credits: null, activity: null, theme: 'crt', provider: '', providers: [] };
   let session = null, others = [], sessionPct = 0, alive = false;
+  // the other providers' windows join the rings, labelled CODEX 5H / CODEX 7D; one with no data is a dead ring that says why
+  const tag = l => l === 'SESSION' ? '5H' : l === 'WEEK' ? '7D' : l;
   function derive() {
     session = D.windows.find(w => w.label === 'SESSION') || null;
     others = D.windows.filter(w => w.label !== 'SESSION');
+    for (const p of D.providers || []) {
+      if (!p.name || p.name === D.provider) continue;
+      const name = p.name.toUpperCase();
+      if (p.windows && p.windows.length) others = others.concat(p.windows.map(w => Object.assign({}, w, { label: name + ' ' + tag(w.label) })));
+      else others.push({ label: name, pct: 0, resets: null, status: p.status || 'NO DATA' });
+    }
     sessionPct = session ? Math.round(session.pct) : 0;
     alive = D.windows.length > 0;
   }
@@ -99,6 +107,7 @@
   const estimating = () => est.pct !== null && est.api !== null && Math.round(est.pct) !== Math.round(est.api);
   const THEME = (location.search.match(/theme=(\w+)/) || [])[1] || D.theme || 'crt';
   window.pulse = { activity: applyActivity, usage: p => {
+    est.pct = est.api = null;                       // a fresh reading, maybe of another provider: no stale estimate
     applyUsage(p); applyActivity(p && p.activity); applyEstimate(p && p.estimate);
     if (p && p.theme && p.theme !== THEME && !location.search) {       // theme changed from the menu: reload into it
       location.hash = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(D))));
@@ -117,7 +126,10 @@
   const short = s => s < 60 ? s + 'S' : s < 3600 ? Math.floor(s / 60) + 'M' : s < 86400 ? Math.floor(s / 3600) + 'H' : Math.floor(s / 86400) + 'D';
   const fmtK = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K' : String(n);
   const resetMs = w => { const r = w && w.resets ? Date.parse(w.resets) : NaN; return isNaN(r) ? NaN : r - Date.now(); };
-  const resetText = w => { const m = resetMs(w); return (isNaN(m) ? 'RESET ?' : 'RESET ' + span(m)) + (w === session && estimating() ? ' · EST' : ''); };
+  const resetText = w => { if (w && w.status) return w.status; const m = resetMs(w); return (isNaN(m) ? 'RESET ?' : 'RESET ' + span(m)) + (w === session && estimating() ? ' · EST' : ''); };
+  const pctText = w => w.status ? '?' : Math.round(w.pct) + '%';
+  // the plan badge names the provider when more than one is on the monitor
+  const planBadge = () => (D.providers || []).length > 1 && D.provider ? D.provider.toUpperCase() + (D.plan ? ' · ' + D.plan : '') : D.plan;
   const ageSec = () => Math.max(0, Math.floor(Date.now() / 1000 - D.fetched));
   const fresh = () => alive && !D.status && ageSec() < 120;
   function nextReset() {
@@ -271,7 +283,7 @@
     const tone = p => p >= 85 ? C.red : p >= 60 ? C.amber : C.green;
     ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
     px('PULSE LIMITS', 14, 12, 2, C.text);
-    if (D.plan) px(D.plan, W - 14 - tw(D.plan, 1), 12, 1, C.blue);
+    const badge = planBadge(); if (badge) px(badge, W - 14 - tw(badge, 1), 12, 1, C.blue);
     const [st, kind] = statusInfo(t);
     px(st, W - 14 - tw(st, 1), 24, 1, { ok: C.green, stale: C.amber, dead: C.red, old: C.dim }[kind]);
 
@@ -298,17 +310,17 @@
     if (alive) { ctx.fillStyle = col; ctx.fillRect(bx, by, Math.round(bw * sessionPct / 100), 3); }
     if (!alive && Math.floor(t / 500) % 2 === 0) px('NO SIGNAL', TX + (ECG.W - tw('NO SIGNAL', 2)) / 2, BASE - 22, 2, C.red);
 
-    // rings, then the trend fills whatever width is left
-    const top = BY + BH + 14, r = 26, step = 112;
-    others.slice(0, 3).forEach((w, i) => {
-      const cx = BX + r + 4 + i * step, cy = top + 12 + r, pct = Math.round(w.pct);
+    // rings (smaller when a second provider adds its own), then the trend fills whatever width is left
+    const nr = Math.min(others.length, 4), r = nr > 3 ? 21 : 26, step = nr > 3 ? 90 : 112, top = BY + BH + 14;
+    others.slice(0, nr).forEach((w, i) => {
+      const cx = BX + r + 4 + i * step, cy = top + 12 + r, pct = Math.round(w.pct), pt = pctText(w), col = w.status ? C.dim : tone(pct);
       px(w.label, cx - tw(w.label, 1) / 2, top, 1, C.dim);
-      ring(cx, cy, r, pct, { track: C.track, color: tone(pct), width: 6 });
-      const s = String(pct).length > 2 ? 1 : 2;
-      px(pct + '%', cx - tw(pct + '%', s) / 2, cy - 3.5 * s, s, tone(pct));
-      const rt = resetText(w); px(rt, cx - tw(rt, 1) / 2, cy + r + 10, 1, C.dim);
+      ring(cx, cy, r, pct, { track: C.track, color: col, width: 6 });
+      const s = pt.length > 2 ? 1 : 2;
+      px(pt, cx - tw(pt, s) / 2, cy - 3.5 * s, s, col);
+      const rt = resetText(w); px(rt, cx - tw(rt, 1) / 2, cy + r + 10, 1, w.status ? C.red : C.dim);
     });
-    const ringsEnd = others.length ? BX + 4 + Math.min(others.length, 3) * step - 20 : BX;
+    const ringsEnd = nr ? BX + 4 + nr * step - 20 : BX;
     const tx0 = ringsEnd + 24, bw5 = 5, n = Math.floor((BX + BW - tx0) / bw5), tx = BX + BW - n * bw5, ty = top, th = 54;
     px('SESSION · 12H', tx, ty, 1, C.dim);
     trendBars(tx, ty + 12 + th, n, bw5 - 1, 1, th, tone, C.grid);
@@ -331,7 +343,8 @@
     const SF = '-apple-system, system-ui, "Helvetica Neue", sans-serif';
     ctx.fillStyle = P.bg; ctx.fillRect(0, 0, W, H);
     txt('Pulse Limits', 16, 26, '600 15px ' + SF, P.text);
-    if (D.plan) { const pw = measure(D.plan, '600 10px ' + SF) + 14; ctx.fillStyle = P.card; rr(112, 13, pw, 18, 9); ctx.fill(); txt(D.plan, 112 + pw / 2, 26, '600 10px ' + SF, P.sub, 'center'); }
+    const badge = planBadge();
+    if (badge) { const pw = measure(badge, '600 10px ' + SF) + 14; ctx.fillStyle = P.card; rr(112, 13, pw, 18, 9); ctx.fill(); txt(badge, 112 + pw / 2, 26, '600 10px ' + SF, P.sub, 'center'); }
     const [st, kind] = statusInfo(t);
     const stText = kind === 'ok' ? (Math.floor(t / 1000) % 2 ? '● Live' : '   Live') : st.charAt(0) + ' ' + st.slice(2).toLowerCase().replace(/^\w/, c => c.toUpperCase());
     txt(stText, W - 16, 26, '500 12px ' + SF, { ok: P.green, stale: P.amber, dead: P.red, old: P.sub }[kind], 'right');
@@ -351,17 +364,18 @@
     ctx.fillStyle = P.line; rr(x + 16, y + h - 16, w - 32, 4, 2); ctx.fill();
     if (alive) { ctx.fillStyle = col; rr(x + 16, y + h - 16, Math.max(4, (w - 32) * sessionPct / 100), 4, 2); ctx.fill(); }
 
-    const ry = 180, rh = 96, cw = 108, gapc = 10;
-    others.slice(0, 3).forEach((wd, i) => {
-      const cx0 = 16 + i * (cw + gapc), pct = Math.round(wd.pct);
+    // up to four cards; a second provider's rings make them narrower
+    const nr = Math.min(others.length, 4), small = nr > 3, ry = 180, rh = 96, cw = small ? 86 : 108, gapc = small ? 8 : 10;
+    others.slice(0, nr).forEach((wd, i) => {
+      const cx0 = 16 + i * (cw + gapc), pct = Math.round(wd.pct), rx = small ? 26 : 34, rr0 = small ? 18 : 22;
       ctx.fillStyle = P.card; rr(cx0, ry, cw, rh, 12); ctx.fill();
       txt(wd.label.charAt(0) + wd.label.slice(1).toLowerCase(), cx0 + 12, ry + 20, '500 11px ' + SF, P.sub);
-      ring(cx0 + 34, ry + 58, 22, pct, { track: P.line, color: tone(pct), width: 5, cap: 'round' });
-      txt(pct + '%', cx0 + 34, ry + 63, '600 13px ' + SF, P.text, 'center');
-      txt(span(resetMs(wd)).toLowerCase(), cx0 + 66, ry + 55, '400 10px ' + SF, P.sub);
-      txt('reset', cx0 + 66, ry + 68, '400 10px ' + SF, P.sub);
+      ring(cx0 + rx, ry + 58, rr0, pct, { track: P.line, color: wd.status ? P.sub : tone(pct), width: 5, cap: 'round' });
+      txt(pctText(wd), cx0 + rx, ry + 63, (small ? '600 11px ' : '600 13px ') + SF, P.text, 'center');
+      if (wd.status) txt(wd.status.toLowerCase(), cx0 + cw / 2, ry + 90, '400 9px ' + SF, P.red, 'center');
+      else { const sf = (small ? '400 9px ' : '400 10px ') + SF; txt(span(resetMs(wd)).toLowerCase(), cx0 + rx + rr0 + 10, ry + 55, sf, P.sub); txt('reset', cx0 + rx + rr0 + 10, ry + 68, sf, P.sub); }
     });
-    const tx = 16 + Math.min(others.length, 3) * (cw + gapc), tw0 = 484 - tx;
+    const tx = 16 + nr * (cw + gapc), tw0 = 484 - tx;
     ctx.fillStyle = P.card; rr(tx, ry, tw0, rh, 12); ctx.fill();
     txt('Session · 12h', tx + 12, ry + 20, '500 11px ' + SF, P.sub);
     const n = Math.floor((tw0 - 24) / 5);
@@ -379,7 +393,7 @@
     ctx.strokeStyle = P.grid; ctx.lineWidth = 1; ctx.beginPath();
     for (let i = -H; i < W; i += 26) { ctx.moveTo(i, 0); ctx.lineTo(i + H, H); } ctx.stroke();
     txt('PULSE//LIMITS', 16, 28, '700 20px ' + F, P.cy, 'left', 3);
-    if (D.plan) txt(D.plan, W - 16, 22, '600 11px ' + F, P.mg, 'right', 2);
+    const badge = planBadge(); if (badge) txt(badge, W - 16, 22, '600 11px ' + F, P.mg, 'right', 2);
     const [st, kind] = statusInfo(t);
     txt(st.replace('●', '▶').replace('○', '▷'), W - 16, 36, '600 11px ' + F, { ok: P.yl, stale: P.yl, dead: P.red, old: P.dim }[kind], 'right', 2);
 
@@ -403,15 +417,15 @@
     const segs = 46, sw = (w - 24) / segs;
     for (let i = 0; i < segs; i++) { const on = alive && i < Math.round(segs * sessionPct / 100); ctx.fillStyle = on ? col : P.grid; if (on) { ctx.shadowColor = col; ctx.shadowBlur = 6; } ctx.fillRect(x + 12 + i * sw, y + h - 12, sw - 2, 4); ctx.shadowBlur = 0; }
 
-    const top = y + h + 14, r = 25, step = 110;
-    others.slice(0, 3).forEach((wd, i) => {
+    const nr = Math.min(others.length, 4), r = nr > 3 ? 21 : 25, step = nr > 3 ? 90 : 110, top = y + h + 14;
+    others.slice(0, nr).forEach((wd, i) => {
       const cx = x + r + 6 + i * step, cy = top + 14 + r, pct = Math.round(wd.pct);
-      txt(wd.label, cx, top + 6, '600 10px ' + F, P.dim, 'center', 2);
-      ring(cx, cy, r, pct, { track: P.grid, color: tone(pct), width: 5, dash: [5, 3], glow: 8 });
-      txt(pct + '%', cx, cy + 5, '700 14px ' + F, P.text, 'center');
-      txt(resetText(wd), cx, cy + r + 16, '600 9px ' + F, P.dim, 'center', 1);
+      txt(wd.label, cx, top + 6, '600 10px ' + F, P.dim, 'center', nr > 3 ? 1 : 2);
+      ring(cx, cy, r, pct, { track: P.grid, color: wd.status ? P.dim : tone(pct), width: 5, dash: [5, 3], glow: 8 });
+      txt(pctText(wd), cx, cy + 5, '700 14px ' + F, P.text, 'center');
+      txt(resetText(wd), cx, cy + r + 16, '600 9px ' + F, wd.status ? P.red : P.dim, 'center', 1);
     });
-    const ringsEnd = others.length ? x + 6 + Math.min(others.length, 3) * step - 20 : x;
+    const ringsEnd = nr ? x + 6 + nr * step - 20 : x;
     const tx0 = ringsEnd + 26, n = Math.floor((x + w - tx0) / 5), tx = x + w - n * 5;
     txt('SESSION · 12H', tx, top + 6, '600 10px ' + F, P.dim, 'left', 2);
     trendBars(tx, top + 72, n, 4, 1, 50, p => p >= 85 ? P.red : p >= 60 ? P.yl : P.mg, P.grid);
@@ -448,7 +462,7 @@
 
     const hg = ctx.createLinearGradient(16, 0, 200, 0); hg.addColorStop(0, P.cyan); hg.addColorStop(1, P.pink);
     txt('PULSE LIMITS', 16, 32, 'italic 800 22px ' + F, hg, 'left', 2);
-    if (D.plan) txt(D.plan, W - 16, 24, '600 11px ' + F, P.lav, 'right', 2);
+    const badge = planBadge(); if (badge) txt(badge, W - 16, 24, '600 11px ' + F, P.lav, 'right', 2);
     const [st, kind] = statusInfo(t);
     txt(st, W - 16, 38, '600 11px ' + F, { ok: P.cyan, stale: '#ffb347', dead: '#ff4d4d', old: P.lav }[kind], 'right', 1);
     const col = !alive ? P.lav : D.status ? '#ffb347' : tone(sessionPct);
@@ -456,24 +470,25 @@
     const lab = activityLabel();
     if (lab !== null) txt(lab, 16, 54, '600 11px ' + F, busy() ? P.cyan : P.lav, 'left', 1.5);
 
-    // readouts sit on dark glass panels so the grid never runs through the numbers
+    // readouts sit on dark glass panels so the grid never runs through the numbers;
+    // a second provider brings the rings to four, narrower, and the session panel gives way
     const panel = (x, y, w, h) => { ctx.fillStyle = 'rgba(8,2,20,.82)'; rr(x, y, w, h, 10); ctx.fill(); ctx.strokeStyle = 'rgba(34,230,255,.35)'; ctx.lineWidth = 1; ctx.stroke(); };
-    panel(12, 192, 270, 96);
+    const shown = others.slice(0, 4), wide = shown.length <= 3, per = wide ? 78 : 60;
+    panel(12, 192, wide ? 270 : 212, 96);
     const big = alive ? sessionPct + '%' : '--', bf = 'italic 900 52px ' + F;
     const cg = ctx.createLinearGradient(0, 200, 0, 246); cg.addColorStop(0, '#ffffff'); cg.addColorStop(.55, '#ffffff'); cg.addColorStop(.56, '#ff9ad4'); cg.addColorStop(1, P.pink);
     ctx.shadowColor = P.pink; ctx.shadowBlur = 14; txt(big, 24, 250, bf, cg); ctx.shadowBlur = 0;
-    txt(alive ? 'SESSION · ' + resetText(session) : 'NO SIGNAL', 26, 270, '600 11px ' + F, alive ? P.white : '#ff4d4d', 'left', 2);
+    txt(alive ? 'SESSION · ' + resetText(session) : 'NO SIGNAL', 26, 270, '600 11px ' + F, alive ? P.white : '#ff4d4d', 'left', wide ? 2 : 1);
     if (!alive && D.hint) txt(D.hint, 26, 280, '500 9px ' + F, P.lav, 'left', 1);
-    const shown = others.slice(0, 3);
     if (shown.length) {
-      const pw = shown.length * 78 + 16, px0 = W - 12 - pw;
+      const pw = shown.length * per + 16, px0 = W - 12 - pw, r = wide ? 23 : 19;
       panel(px0, 192, pw, 96);
       shown.forEach((wd, i) => {
-        const cx = px0 + 8 + 39 + i * 78, cy = 242, pct = Math.round(wd.pct);
-        ring(cx, cy, 23, pct, { track: '#2a0d3d', color: i % 2 ? P.cyan : P.pink, width: 4, cap: 'round', glow: 8 });
-        txt(pct + '%', cx, cy + 5, '700 13px ' + F, P.white, 'center');
-        txt(wd.label, cx, cy - 32, '600 9px ' + F, P.lav, 'center', 2);
-        txt(span(resetMs(wd)), cx, cy + 40, '600 9px ' + F, P.lav, 'center', 1);
+        const cx = px0 + 8 + per / 2 + i * per, cy = 242, pct = Math.round(wd.pct);
+        ring(cx, cy, r, pct, { track: '#2a0d3d', color: wd.status ? P.lav : i % 2 ? P.cyan : P.pink, width: 4, cap: 'round', glow: 8 });
+        txt(pctText(wd), cx, cy + 5, (wide ? '700 13px ' : '700 11px ') + F, P.white, 'center');
+        txt(wd.label, cx, cy - 32, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5);
+        txt(wd.status ? wd.status : span(resetMs(wd)), cx, cy + 40, '600 9px ' + F, wd.status ? '#ff4d4d' : P.lav, 'center', wide ? 1 : 0.5);
       });
     }
   }};
@@ -511,7 +526,7 @@
     ctx.fillStyle = '#1c1a17'; rr(26, 24, 58, 26, 3); ctx.fill();               // the little digital window, like a dB readout
     txt(alive ? sessionPct + '%' : '--', 55, 43, '600 16px ui-monospace, Menlo, monospace', '#e8d9a0', 'center');
     dial(326, 12, 160, 172);
-    others.slice(0, 2).forEach((wd, i) => { const cy = 52 + i * 86; gauge(406, cy + 8, 46, Math.round(wd.pct), wd.label, null, false, 1 + i); txt(Math.round(wd.pct) + '%  ·  ' + span(resetMs(wd)), 406, cy + 44, '500 9px ' + F, P.dim, 'center'); });
+    others.slice(0, 2).forEach((wd, i) => { const cy = 52 + i * 86; gauge(406, cy + 8, 46, Math.round(wd.pct), wd.label, null, false, 1 + i); txt(wd.status ? wd.status : Math.round(wd.pct) + '%  ·  ' + span(resetMs(wd)), 406, cy + 44, '500 9px ' + F, wd.status ? P.red : P.dim, 'center'); });
     const sx = 14, sy = 196, sw = 472, sh = 92;
     ctx.fillStyle = P.cream2; rr(sx, sy, sw, sh, 6); ctx.fill();
     ctx.strokeStyle = 'rgba(200,50,43,.25)'; ctx.lineWidth = 1; ctx.beginPath();
@@ -522,7 +537,7 @@
     const lab = activityLabel();
     txt('ACTIVITY' + (lab ? '  ·  ' + lab : ''), sx + 12, sy + 16, '700 9px ' + F, busy() ? P.red : P.dim, 'left', 2);
     txt(alive ? 'UPDATED ' + short(ageSec()) + ' AGO  ·  NEXT RESET ' + nextReset() : (D.hint || ''), sx + sw - 12, sy + sh - 8, '500 8px ' + F, P.dim, 'right', 1);
-    if (D.plan) txt(D.plan, sx + sw - 12, sy + 16, '700 9px ' + F, P.brass, 'right', 2);
+    const badge = planBadge(); if (badge) txt(badge, sx + sw - 12, sy + 16, '700 9px ' + F, P.brass, 'right', 2);
   }};
 
   // =========================================================================

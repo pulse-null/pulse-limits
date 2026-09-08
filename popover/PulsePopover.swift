@@ -28,7 +28,10 @@
 import Cocoa
 import WebKit
 
-let cacheDir  = NSString(string: "~/.cache/pulse-limits").expandingTildeInPath
+// The plugin honours XDG_CACHE_HOME, so do we: tests point both at a scratch folder.
+let cacheDir  = ((ProcessInfo.processInfo.environment["XDG_CACHE_HOME"] ?? "").isEmpty
+                 ? NSString(string: "~/.cache").expandingTildeInPath
+                 : ProcessInfo.processInfo.environment["XDG_CACHE_HOME"]!) + "/pulse-limits"
 let urlFile   = cacheDir + "/panel.url"
 let pidFile   = cacheDir + "/popover.pid"
 let stampFile = cacheDir + "/popover.closed"   // "hidden at" epoch, read by open-monitor.sh
@@ -252,12 +255,17 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                   json.hasPrefix("{") else { return }
             DispatchQueue.main.async {
                 guard self.visible else { return }
-                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let fetched = obj["fetched"] as? Int,
-                   let windows = obj["windows"] as? [[String: Any]],
-                   let session = windows.first(where: { ($0["label"] as? String) == "SESSION" }),
-                   let pct = session["pct"] as? Double ?? (session["pct"] as? Int).map(Double.init) {
-                    self.lastReading = (pct, fetched)
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    // Dead reckoning is calibrated on Claude Code's transcripts: only Claude's session gets it.
+                    if (obj["provider"] as? String ?? "claude") == "claude",
+                       let fetched = obj["fetched"] as? Int,
+                       let windows = obj["windows"] as? [[String: Any]],
+                       let session = windows.first(where: { ($0["label"] as? String) == "SESSION" }),
+                       let pct = session["pct"] as? Double ?? (session["pct"] as? Int).map(Double.init) {
+                        self.lastReading = (pct, fetched)
+                    } else {
+                        self.lastReading = nil; self.lastEstimate = nil
+                    }
                     self.lastEstimateAt = Date.distantPast
                 }
                 self.web.evaluateJavaScript("window.pulse && window.pulse.usage(\(json))", completionHandler: nil)
