@@ -325,6 +325,16 @@ pub fn fetch(st: &mut Store, url: &str, token: &str) {
     }
 }
 
+/// The prepaid balance as the credits caption. `used` and `currency` are what the panel, the
+/// tooltip and the TUI print ("CREDITS 1097.00 PREPAID"); `balance` is the honest name: credits
+/// bought, not spend, so never a percentage. Null without one; the on-demand cap is a ring instead.
+pub fn credits(c: &Value) -> Value {
+    match c.get("config").and_then(|c| c.get("prepaidBalance")).and_then(|m| m.get("val")).filter(|v| v.as_f64().is_some_and(|b| b > 0.0)) {
+        Some(balance) => json!({ "used": balance, "currency": "PREPAID", "balance": balance }),
+        None => Value::Null,
+    }
+}
+
 /// The label to show: the settings lookup first, then the tier a billing reply may carry.
 fn plan_of(cached: Option<&Value>) -> String {
     plan_cached().filter(|p| !p.is_empty()).unwrap_or_else(|| cached.map(plan_of_reply).unwrap_or_default())
@@ -684,7 +694,8 @@ pub fn run(min_interval: i64) -> Doc {
     }
     let cached = st.cached();
     let windows = cached.as_ref().map(|c| windows(c, st.now)).unwrap_or_default();
-    st.emit(&plan_of(cached.as_ref()), windows, Value::Null)
+    let credits = cached.as_ref().map(credits).unwrap_or(Value::Null);
+    st.emit(&plan_of(cached.as_ref()), windows, credits)
 }
 
 /// {keys, period type, percent, on-demand cap, error}: the shape of a reply, never the balance.
@@ -785,12 +796,14 @@ mod tests {
     const DENIED: &str = include_str!("../../tests/fixtures/grok/fixture-401.json");
     const AUTH: &str = include_str!("../../tests/fixtures/grok/auth-fixture.json");
     // issue #11: an expired login with the +00:00 stamps and fields to preserve, the issuer's
-    // discovery document and the token replies (rotated, kept, refused)
+    // discovery document, the token replies (rotated, kept, refused), and the extra-usage shapes
     const EXPIRED: &str = include_str!("../../tests/fixtures/grok/auth-expired.synthetic.json");
     const DISCOVERY: &str = include_str!("../../tests/fixtures/grok/oidc-discovery.synthetic.json");
     const TOKEN_OK: &str = include_str!("../../tests/fixtures/grok/token-200.synthetic.json");
     const TOKEN_KEPT: &str = include_str!("../../tests/fixtures/grok/token-200-no-rotation.synthetic.json");
     const TOKEN_DEAD: &str = include_str!("../../tests/fixtures/grok/token-400-invalid-grant.synthetic.json");
+    const CAPPED: &str = include_str!("../../tests/fixtures/grok/fixture-200-ondemand-cap.synthetic.json");
+    const NO_EXTRAS: &str = include_str!("../../tests/fixtures/grok/fixture-200-no-extras.synthetic.json");
 
     const CAPTURED: i64 = 1788877617; // 2026-09-08T14:26:57Z, inside the fixture's period and token life
     const PERIOD_START: i64 = 1788802218; // 2026-09-07T17:30:18Z
@@ -1205,7 +1218,7 @@ mod tests {
         let d = run(270);
         assert_eq!((d.provider.as_str(), d.status.as_str(), d.hint.as_str(), d.source.as_str(), d.plan.as_str()), ("grok", "", "", "LIVE", "X PREMIUM+"));
         assert_eq!(rows(&d.windows), vec![("WEEK".into(), "1.0".into(), Some(RESET.into()))]);
-        assert_eq!(d.credits, Value::Null);
+        assert_eq!(d.credits, json!({ "used": 1097, "currency": "PREPAID", "balance": 1097 })); // the prepaid balance, never a ring
         assert_eq!(d.session().unwrap().label, "WEEK"); // no SESSION window: the first one is the bar's number
         assert_eq!(std::fs::read_to_string(s.cache().join("plan-grok")).unwrap(), "X PREMIUM+\n");
         assert!(s.cache().join("usage-grok.json").is_file());
@@ -1348,6 +1361,37 @@ mod tests {
         assert!(out.contains(&format!("  ok       usage url: {BASE_URL}/billing?format=credits\n")), "{out}");
         assert!(out.contains("  ok       cached reply (0 min old): {\"keys\":\"config\",\"period\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"creditUsagePercent\":1.0,\"onDemandCap\":0,\"error\":null}\n"), "{out}");
         drop(s);
+    }
+
+    #[test]
+    fn extras_ring_only_above_cap_zero_and_the_prepaid_caption() {
+        // the real reply: cap 0 and a balance of 1097 -> no ONDEMAND ring, the balance as the caption
+        let c = v(REPLY);
+        assert_eq!(rows(&windows(&c, CAPTURED)).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["WEEK"]);
+        assert_eq!(credits(&c), json!({ "used": 1097, "currency": "PREPAID", "balance": 1097 }));
+        // a cap: the ring at used/cap, and a balance of 0 is no caption
+        let c = v(CAPPED);
+        assert_eq!(
+            rows(&windows(&c, CAPTURED)),
+            vec![("WEEK".into(), "42.5".into(), Some(RESET.into())), ("ONDEMAND".into(), "25.0".into(), Some(RESET.into()))]
+        );
+        assert_eq!(credits(&c), Value::Null);
+        // neither
+        let c = v(NO_EXTRAS);
+        assert_eq!(rows(&windows(&c, CAPTURED)), vec![("WEEK".into(), "12".into(), Some(RESET.into()))]);
+        assert_eq!(credits(&c), Value::Null);
+        // both, and the balance as the reply wrote it
+        let c = v(
+            r#"{"config":{"creditUsagePercent":3,"billingPeriodEnd":"2099-01-08T00:00:00Z","onDemandCap":{"val":100},"onDemandUsed":{"val":10},"prepaidBalance":{"val":12.5}}}"#,
+        );
+        assert_eq!(rows(&windows(&c, CAPTURED)).len(), 2);
+        assert_eq!(credits(&c), json!({ "used": 12.5, "currency": "PREPAID", "balance": 12.5 }));
+        // shapes that carry no balance
+        for text in
+            [r#"{"config":{"prepaidBalance":{"val":-5}}}"#, r#"{"config":{"prepaidBalance":{"val":"1097"}}}"#, r#"{"config":{"prepaidBalance":7}}"#, "{}"]
+        {
+            assert_eq!(credits(&v(text)), Value::Null, "{text}");
+        }
     }
 
     #[test]
