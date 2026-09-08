@@ -393,16 +393,97 @@ struct Win {
     resets: Option<f64>,
 }
 
+fn wins(v: Option<&Value>) -> Vec<Win> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| {
+                    Some(Win {
+                        label: w.get("label")?.as_str()?.to_string(),
+                        pct: w.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
+                        resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of_f),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// CLAUDE SESSION, GROK WEEK: a window named after a model or a product (FABLE, GPT-5) keeps its own name.
+fn qualify(provider: &str, w: &Win) -> Win {
+    if w.label == "SESSION" || w.label == "WEEK" {
+        Win { label: format!("{} {}", provider.to_ascii_uppercase(), w.label), ..w.clone() }
+    } else {
+        w.clone()
+    }
+}
+
+/// An activity reading: tokens/min, idle seconds, sessions; None when there is none.
+type Act = Option<(f64, f64, i64)>;
+
+/// Null and absent are no reading.
+fn act_of(a: Option<&Value>) -> Act {
+    let a = a?;
+    Some((
+        a.get("tok_per_min")?.as_f64()?,
+        a.get("idle_s").and_then(Value::as_f64).unwrap_or(0.0),
+        a.get("sessions").and_then(Value::as_i64).unwrap_or(0),
+    ))
+}
+
+/// The rate of a trace: nothing streaming is a flat line.
+fn bpm_of(act: Act) -> f64 {
+    match act {
+        Some((tok, _, _)) if tok > 0.0 => (60.0 + 60.0 * (1.0 + tok / 100.0).log10()).min(180.0),
+        _ => 0.0,
+    }
+}
+
+fn busy_of(act: Act) -> bool {
+    matches!(act, Some((tok, _, _)) if tok > 0.0)
+}
+
+fn label_of(act: Act) -> Option<String> {
+    let (tok, idle, sessions) = act?;
+    Some(if tok > 0.0 {
+        format!("{} TOK/MIN{}", fmt_k(tok as i64), if sessions > 1 { format!(" · {sessions} SESSIONS") } else { String::new() })
+    } else {
+        format!("IDLE {}", short(idle as i64))
+    })
+}
+
+/// One trace of several: a provider with an activity reading of its own, when more than one has one.
+struct Lane {
+    key: String,  // the provider as the payload spells it
+    name: String, // upper-cased: the label
+    active: bool, // the active provider's lane follows the feed's live reading
+    act: Act,
+    pct: Option<f64>, // its session window, for the colour
+    ecg: Ecg,
+}
+
+impl Lane {
+    fn bpm(&self, alive: bool) -> f64 {
+        if self.active && !alive {
+            0.0
+        } else {
+            bpm_of(self.act)
+        }
+    }
+}
+
 struct App {
     feed: Feed,
-    ecg: Ecg,
+    ecg: Ecg,              // the single trace of the active provider
+    lanes: Vec<Lane>,      // one per provider with an activity reading, when more than one has one; else empty
+    multi: bool,           // more than one provider on the monitor: every SESSION and WEEK window says whose it is
     d: Map<String, Value>, // the payload, merged like Object.assign in the panel
     session: Option<Win>,
     others: Vec<Win>,
     session_pct: i64,
     alive: bool,
-    act: Option<(f64, f64, i64)>, // tokens/min, idle seconds, sessions
-    est: Option<(f64, f64)>,      // dead-reckoned %, API %
+    act: Act,                // the active provider's reading, the feed's live one first
+    est: Option<(f64, f64)>, // dead-reckoned %, API %
     seen: u64,
     theme: usize,
     help: bool,
@@ -425,26 +506,25 @@ impl App {
                 self.d.insert(k, v);
             }
         }
-        let windows: Vec<Win> = self
-            .d
-            .get("windows")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|w| {
-                        Some(Win {
-                            label: w.get("label")?.as_str()?.to_string(),
-                            pct: w.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
-                            resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of_f),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let windows = wins(self.d.get("windows"));
+        let providers = self.d.get("providers").and_then(Value::as_array).cloned().unwrap_or_default();
+        let provider = self.str("provider");
+        self.multi = providers.len() > 1 && !provider.is_empty();
         // SESSION is the big number; a provider with no session window (a weekly pool only) shows its first one there
         let session_i = windows.iter().position(|w| w.label == "SESSION").or(if windows.is_empty() { None } else { Some(0) });
         self.session = session_i.map(|i| windows[i].clone());
-        self.others = windows.iter().enumerate().filter(|(i, _)| Some(*i) != session_i).map(|(_, w)| w.clone()).collect();
+        // with more than one provider on, every window says whose it is, and the other providers' windows join the bars
+        let multi = self.multi;
+        self.others = windows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != session_i)
+            .map(|(_, w)| if multi { qualify(&provider, w) } else { w.clone() })
+            .collect();
+        for p in &providers {
+            let Some(name) = p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && *n != provider.as_str()) else { continue };
+            self.others.extend(wins(p.get("windows")).iter().map(|w| qualify(name, w)));
+        }
         self.alive = !windows.is_empty();
         self.session_pct = self.session.as_ref().map(|s| rnd(s.pct)).unwrap_or(0);
         self.est = None;
@@ -457,14 +537,41 @@ impl App {
             }
         }
         let act = activity.or_else(|| self.d.get("activity").cloned());
-        self.act = act.and_then(|a| {
-            Some((
-                a.get("tok_per_min")?.as_f64()?,
-                a.get("idle_s").and_then(Value::as_f64).unwrap_or(0.0),
-                a.get("sessions").and_then(Value::as_i64).unwrap_or(0),
-            ))
-        });
+        self.act = act_of(act.as_ref());
+        // one lane per provider with an activity reading of its own (providers[i].activity; absent counts as null),
+        // when more than one has one; a lane keeps its trace across payload refreshes
+        let mut old = std::mem::take(&mut self.lanes);
+        let srcs: Vec<(&str, Act, Option<f64>)> = providers
+            .iter()
+            .filter_map(|p| {
+                let (name, act) = (p.get("name")?.as_str()?, act_of(p.get("activity"))?);
+                let w = wins(p.get("windows"));
+                Some((name, Some(act), w.iter().find(|w| w.label == "SESSION").or(w.first()).map(|w| w.pct)))
+            })
+            .collect();
+        if srcs.len() > 1 {
+            self.lanes = srcs
+                .into_iter()
+                .map(|(name, act, pct)| Lane {
+                    key: name.to_string(),
+                    name: name.to_ascii_uppercase(),
+                    active: name == provider,
+                    act: if name == provider { self.act } else { act },
+                    pct,
+                    ecg: old.iter().position(|l| l.key == name).map(|i| old.remove(i).ecg).unwrap_or_default(),
+                })
+                .collect();
+        }
         true
+    }
+
+    /// The caption over the big number: SESSION, or whose window it is when more than one provider is on.
+    fn session_label(&self) -> String {
+        match (&self.session, self.multi) {
+            (Some(s), true) => qualify(&self.str("provider"), s).label,
+            (None, true) => format!("{} SESSION", self.str("provider").to_ascii_uppercase()),
+            _ => "SESSION".into(),
+        }
     }
 
     fn str(&self, key: &str) -> String {
@@ -485,22 +592,16 @@ impl App {
         }
         match self.act {
             None => 60.0, // no reading yet: a resting pulse
-            Some((tok, _, _)) if tok > 0.0 => (60.0 + 60.0 * (1.0 + tok / 100.0).log10()).min(180.0),
-            Some(_) => 0.0,
+            act => bpm_of(act),
         }
     }
 
     fn busy(&self) -> bool {
-        matches!(self.act, Some((tok, _, _)) if tok > 0.0)
+        busy_of(self.act)
     }
 
     fn activity_label(&self) -> Option<String> {
-        let (tok, idle, sessions) = self.act?;
-        Some(if tok > 0.0 {
-            format!("{} TOK/MIN{}", fmt_k(tok as i64), if sessions > 1 { format!(" · {sessions} SESSIONS") } else { String::new() })
-        } else {
-            format!("IDLE {}", short(idle as i64))
-        })
+        label_of(self.act)
     }
 
     fn age(&self) -> f64 {
@@ -583,6 +684,8 @@ struct Layout {
     wide: bool,
     big: String,
     reset: String,
+    caption: String,
+    lanes: Vec<(u16, u16, u16)>, // per lane: its label row, the first trace row, the trace rows; empty for the single trace
     right_w: u16,
     trace_x: u16,
     trace_w: u16,
@@ -612,8 +715,9 @@ fn layout(app: &mut App, w: u16, h: u16) -> Layout {
         _ => String::new(),
     };
     let dw = big.chars().count() as i32 * 4 - 1;
+    let caption = app.session_label();
     // 15 = "100%": the split does not jump between two- and three-digit readings
-    let right_w = dw.max(reset.chars().count() as i32).max(7).max(if wide { 15 } else { 0 });
+    let right_w = dw.max(reset.chars().count() as i32).max(caption.chars().count() as i32).max(7).max(if wide { 15 } else { 0 });
     let trace_w = (wi - 2 * m - right_w - 2).max(2);
     let base = 1 + 7 + 1 + 1; // header, trace block (label + 5 + bar), sparkline, footer
     let n_win = (app.others.len() as i32).min(4).min(hi - base).max(0);
@@ -654,14 +758,30 @@ fn layout(app: &mut App, w: u16, h: u16) -> Layout {
     let spark_y = y;
     y += spark_h;
     let axis_y = if axis { Some(y) } else { None };
-    let label_w = app.others.iter().take(n_win as usize).map(|o| o.label.chars().count()).max().unwrap_or(4).clamp(4, 8);
+    // a provider-qualified label (CLAUDE SESSION) needs 14 columns; without one 8 is plenty
+    let label_w = app.others.iter().take(n_win as usize).map(|o| o.label.chars().count()).max().unwrap_or(4).clamp(4, if app.multi { 14 } else { 8 });
     app.ecg.init(trace_w as usize * 2);
+    // the lanes share the label row and the body: each gets a label row and the trace rows under it, the first ones a row more
+    let total = 1 + body_h;
+    let n = (app.lanes.len() as i32).min(total / 2);
+    let mut lanes = Vec::with_capacity(n as usize);
+    let mut ly = label_y;
+    for i in 0..n {
+        let rows = total / n + if i < total % n { 1 } else { 0 };
+        lanes.push((ly as u16, (ly + 1) as u16, (rows - 1) as u16));
+        ly += rows;
+    }
+    for lane in app.lanes.iter_mut() {
+        lane.ecg.init(trace_w as usize * 2);
+    }
     Layout {
         too_small: h < MIN_ROWS || w < MIN_COLS,
         m: m as u16,
         wide,
         big,
         reset,
+        caption,
+        lanes,
         right_w: right_w as u16,
         trace_x: m as u16,
         trace_w: trace_w as u16,
@@ -689,6 +809,19 @@ fn rect(x: u16, y: u16, w: u16, h: u16, bounds: Rect) -> Rect {
 
 fn bold(c: Color) -> Style {
     Style::new().fg(c).add_modifier(Modifier::BOLD)
+}
+
+impl Layout {
+    /// The braille trace of `ecg` in the trace column, rows [y, y + h).
+    fn trace(&self, f: &mut Frame, area: Rect, ecg: &Ecg, (y, h): (u16, u16), color: Color, truecolor: bool) {
+        let shape = Trace { ecg, rows: h as usize, color, truecolor };
+        let canvas = Canvas::default()
+            .marker(Marker::Braille)
+            .x_bounds([0.0, (self.trace_w as f64 * 2.0 - 1.0).max(1.0)])
+            .y_bounds([0.0, (h as f64 * 4.0 - 1.0).max(1.0)])
+            .paint(|ctx| ctx.draw(&shape));
+        f.render_widget(canvas, rect(self.trace_x, y, self.trace_w, h, area));
+    }
 }
 
 fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
@@ -737,23 +870,36 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     } else {
         app.tone(&p, app.session_pct as f64)
     };
-    if let Some(mut lab) = app.activity_label() {
-        if lab.chars().count() + 2 > l.trace_w as usize {
-            lab = lab.split(" · ").next().unwrap_or_default().to_string(); // narrow: drop the session count
+    if l.lanes.is_empty() {
+        if let Some(mut lab) = app.activity_label() {
+            if lab.chars().count() + 2 > l.trace_w as usize {
+                lab = lab.split(" · ").next().unwrap_or_default().to_string(); // narrow: drop the session count
+            }
+            let live = if app.busy() { app.color(p.ok) } else { app.color(p.dim) };
+            let dot = Style::new().fg(live).add_modifier(if app.ecg.beat > 0.3 { Modifier::BOLD } else { Modifier::DIM });
+            let line = Line::from(vec![Span::styled("● ", dot), Span::styled(lab, Style::new().fg(live))]);
+            f.render_widget(Paragraph::new(line), rect(l.trace_x, l.label_y, l.trace_w, 1, area));
         }
-        let live = if app.busy() { app.color(p.ok) } else { app.color(p.dim) };
-        let dot = Style::new().fg(live).add_modifier(if app.ecg.beat > 0.3 { Modifier::BOLD } else { Modifier::DIM });
-        let line = Line::from(vec![Span::styled("● ", dot), Span::styled(lab, Style::new().fg(live))]);
-        f.render_widget(Paragraph::new(line), rect(l.trace_x, l.label_y, l.trace_w, 1, area));
+        l.trace(f, area, &app.ecg, (l.body_y, l.body_h), col, app.truecolor);
     }
-    let body = rect(l.trace_x, l.body_y, l.trace_w, l.body_h, area);
-    let trace = Trace { ecg: &app.ecg, rows: l.body_h as usize, color: col, truecolor: app.truecolor };
-    let canvas = Canvas::default()
-        .marker(Marker::Braille)
-        .x_bounds([0.0, (l.trace_w as f64 * 2.0 - 1.0).max(1.0)])
-        .y_bounds([0.0, (l.body_h as f64 * 4.0 - 1.0).max(1.0)])
-        .paint(|ctx| ctx.draw(&trace));
-    f.render_widget(canvas, body);
+    // one lane per provider: the dot, its name, its own rate, and its trace, coloured by its own session window
+    for (lane, &(ly, by, bh)) in app.lanes.iter().zip(&l.lanes) {
+        let live = if busy_of(lane.act) { app.color(p.ok) } else { app.color(p.dim) };
+        let dot = Style::new().fg(live).add_modifier(if lane.ecg.beat > 0.3 { Modifier::BOLD } else { Modifier::DIM });
+        let mut spans = vec![Span::styled("● ", dot), Span::styled(lane.name.clone(), bold(app.color(p.text)))];
+        if let Some(mut lab) = label_of(lane.act) {
+            let room = (l.trace_w as usize).saturating_sub(4 + lane.name.chars().count()); // after "● NAME  "
+            if lab.chars().count() > room {
+                lab = lab.split(" · ").next().unwrap_or_default().to_string(); // narrow: drop the session count
+            }
+            if lab.chars().count() <= room {
+                spans.push(Span::styled(format!("  {lab}"), Style::new().fg(live)));
+            }
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), rect(l.trace_x, ly, l.trace_w, 1, area));
+        let color = if lane.active { col } else { lane.pct.map(|v| app.tone(&p, v)).unwrap_or(app.color(p.dim)) };
+        l.trace(f, area, &lane.ecg, (by, bh), color, app.truecolor);
+    }
     if !app.alive {
         let flat = l.body_y + ((l.body_h as f64 * 4.0 * 0.62) as u16) / 4; // the row the flat line runs through
         if (t * 2.0) as i64 % 2 == 0 {
@@ -766,7 +912,7 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     }
     // the session: label, big digits, reset, bar
     let right_x = w - m - l.right_w;
-    text!(l.label_y, right_x, l.right_w, Line::styled("SESSION", dim), Alignment::Right);
+    text!(l.label_y, right_x, l.right_w, Line::styled(l.caption.clone(), dim), Alignment::Right);
     let top = l.body_y + (l.body_h - if l.reset_in_body { 6 } else { 5 }) / 2; // digits (and their reset line) centred in the body
     for r in 0..5 {
         let row = l.big.chars().map(|c| glyph(c)[r].replace('#', "█")).collect::<Vec<_>>().join(" ");
@@ -937,8 +1083,12 @@ where
     app.apply();
     let size = terminal.size().map_err(io::Error::other)?;
     let l = layout(app, size.width, size.height);
-    let bpm = app.bpm();
+    let (bpm, alive) = (app.bpm(), app.alive);
     app.ecg.step(dt, bpm);
+    for lane in app.lanes.iter_mut() {
+        let bpm = lane.bpm(alive);
+        lane.ecg.step(dt, bpm);
+    }
     terminal.draw(|f| render(f, app, &l, t)).map_err(io::Error::other)?;
     Ok(())
 }
@@ -1021,6 +1171,8 @@ impl App {
         let mut app = App {
             feed,
             ecg: Ecg::default(),
+            lanes: vec![],
+            multi: false,
             d: Map::new(),
             session: None,
             others: vec![],
@@ -1340,6 +1492,153 @@ mod tests {
         let mut a = App::new(feed(Some(json!({"windows": [{"label": "SESSION", "pct": 1}], "status": ""})), None, None), 0);
         assert!(a.apply());
         assert_eq!(a.bpm(), 60.0, "no reading yet: a resting pulse");
+    }
+
+    /// Claude active with its three windows, grok beside it (and codex when asked), every provider carrying an
+    /// activity reading of its own, as the payload will once it measures each of them.
+    fn several(codex: bool, grok_activity: Value) -> Value {
+        let claude_windows = json!([
+            {"label": "SESSION", "pct": 13, "resets": ts(2 * 3600 + 14 * 60 + 30)},
+            {"label": "WEEK", "pct": 17.0, "resets": ts(4 * 86400 + 7 * 3600 + 30)},
+            {"label": "FABLE", "pct": 30, "resets": ts(3600 + 30)}
+        ]);
+        let mut providers = vec![json!({"name": "claude", "plan": "MAX 20X", "status": "", "windows": claude_windows.clone(),
+            "activity": {"tok_per_min": 3400, "idle_s": 2, "sessions": 2}})];
+        if codex {
+            providers.push(json!({"name": "codex", "plan": "PLUS", "status": "", "activity": {"tok_per_min": 0, "idle_s": 754, "sessions": 0},
+                "windows": [{"label": "SESSION", "pct": 64, "resets": ts(5400)}, {"label": "GPT-5", "pct": 41, "resets": ts(2 * 86400)}]}));
+        }
+        providers.push(json!({"name": "grok", "plan": "X PREMIUM+", "status": "", "activity": grok_activity,
+            "windows": [{"label": "WEEK", "pct": 37.5, "resets": ts(3 * 86400 + 30)}]}));
+        let mut p = busy();
+        p["windows"] = claude_windows;
+        p["credits"] = Value::Null;
+        p["providers"] = Value::Array(providers);
+        p
+    }
+
+    fn labels(a: &App) -> Vec<String> {
+        a.others.iter().map(|w| w.label.clone()).collect()
+    }
+
+    fn braille(row: &str) -> bool {
+        row.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))
+    }
+
+    #[test]
+    fn several_providers_name_every_window() {
+        let grok = json!({"tok_per_min": 610, "idle_s": 0, "sessions": 1});
+        let a = app(several(true, grok.clone()), None, None);
+        assert!(a.multi);
+        assert_eq!(labels(&a), ["CLAUDE WEEK", "FABLE", "CODEX SESSION", "GPT-5", "GROK WEEK"]);
+        assert_eq!(a.session_label(), "CLAUDE SESSION");
+        assert_eq!(a.session.as_ref().unwrap().label, "SESSION", "the window itself keeps its name: the EST marker still finds it");
+        assert_eq!(a.reset_text(a.session.as_ref().unwrap(), true), "RESET 2H 14M · EST");
+        // grok active on the same monitor: its weekly pool is the big number, GROK WEEK; claude's windows join the bars
+        let mut p = several(false, Value::Null);
+        p["provider"] = json!("grok");
+        p["windows"] = json!([{"label": "WEEK", "pct": 37.5, "resets": ts(3 * 86400 + 30)}]);
+        p["estimate"] = Value::Null;
+        let a = app(p, None, None);
+        assert_eq!((a.session_label().as_str(), a.session_pct), ("GROK WEEK", 38));
+        assert_eq!(labels(&a), ["CLAUDE SESSION", "CLAUDE WEEK", "FABLE"]);
+        // no reading at all with two providers on: the caption still says whose the missing session is
+        let mut p = several(false, Value::Null);
+        p["windows"] = json!([]);
+        let a = app(p, None, None);
+        assert_eq!((a.alive, a.session_label().as_str()), (false, "CLAUDE SESSION"));
+        // one provider: bare names, as before
+        let mut p = several(false, Value::Null);
+        p["providers"] = json!([{"name": "claude"}]);
+        let a = app(p, None, None);
+        assert!(!a.multi);
+        assert_eq!((a.session_label().as_str(), labels(&a)), ("SESSION", vec!["WEEK".to_string(), "FABLE".to_string()]));
+        // drawn: the caption at the right of the label row, the names in the bars, at every size
+        let mut a = app(several(false, grok), None, None);
+        for (w, h) in [(90u16, 28u16), (60, 18), (40, 12)] {
+            let l = layout(&mut a, w, h);
+            let rows = draw(&mut a, w, h, 1001.0);
+            assert!(rows[l.label_y as usize].trim_end().ends_with("CLAUDE SESSION"), "{w}x{h}: {}", rows[l.label_y as usize]);
+            let text = rows.join("\n");
+            assert!(text.contains("CLAUDE WEEK ") && text.contains(" 17%  ") && text.contains("FABLE"), "{w}x{h}: {text}");
+            assert_eq!(text.contains("GROK WEEK ") && text.contains(" 38%  "), l.n_win >= 3, "{w}x{h}: {text}");
+        }
+        // narrow: the right column widens to the caption, the label column to the longest name
+        let l = layout(&mut a, 40, 12);
+        assert_eq!((l.right_w, l.label_w, l.trace_w, l.n_win), (14, 11, 22, 2));
+    }
+
+    #[test]
+    fn a_lane_per_provider_with_its_own_activity() {
+        let grok = json!({"tok_per_min": 610, "idle_s": 0, "sessions": 1});
+        let mut a = app(several(false, grok.clone()), None, None);
+        assert_eq!(a.lanes.iter().map(|l| (l.name.as_str(), l.active, l.pct)).collect::<Vec<_>>(), [("CLAUDE", true, Some(13.0)), ("GROK", false, Some(37.5))]);
+        assert_eq!((a.lanes[0].act, a.lanes[1].act), (a.act, Some((610.0, 0.0, 1))), "the active provider's lane follows the feed");
+        assert!((a.lanes[1].bpm(true) - (60.0 + 60.0 * 7.1f64.log10())).abs() < 1e-9);
+        assert_eq!((a.lanes[0].bpm(true), a.lanes[0].bpm(false), a.lanes[1].bpm(false)), (a.bpm(), 0.0, a.lanes[1].bpm(true)));
+        // the label row and the body split into two lanes at every size; both names and rates on screen, a trace in each
+        for (w, h, want) in [(90u16, 28u16, [(2u16, 3u16, 5u16), (8, 9, 5)]), (60, 18, [(2, 3, 2), (5, 6, 2)]), (40, 12, [(1, 2, 2), (4, 5, 2)])] {
+            let l = layout(&mut a, w, h);
+            assert_eq!(l.lanes, want, "{w}x{h}");
+            assert_eq!((l.lanes[0].0, l.lanes[1].1 + l.lanes[1].2), (l.label_y, l.body_y + l.body_h), "{w}x{h}: the lanes fill the block");
+            let rows = draw(&mut a, w, h, 1001.0);
+            let (m, top) = (l.m as usize, want[0].0 as usize);
+            assert!(rows[top][m..].starts_with("● CLAUDE  3.4K TOK/MIN"), "{w}x{h}: {}", rows[top]);
+            assert_eq!(rows[top].contains("2 SESSIONS"), w >= 60, "{w}x{h}: the session count goes first when narrow: {}", rows[top]);
+            assert!(rows[top].trim_end().ends_with("CLAUDE SESSION"), "{w}x{h}: {}", rows[top]);
+            assert!(rows[want[1].0 as usize][m..].starts_with("● GROK  610 TOK/MIN"), "{w}x{h}: {}", rows[want[1].0 as usize]);
+            for &(_, by, bh) in &l.lanes {
+                assert!((by..by + bh).any(|y| braille(&rows[y as usize])), "{w}x{h}: no trace in rows {by}..{}", by + bh);
+            }
+        }
+        // the traces keep running across a payload refresh: the same lanes come back with their columns
+        for _ in 0..3 {
+            draw(&mut a, 90, 28, 1001.0);
+        }
+        let head = a.lanes[0].ecg.head;
+        assert!(head > 0);
+        a.feed.shared.lock().unwrap().version += 1;
+        assert!(a.apply());
+        assert_eq!((a.lanes.len(), a.lanes[0].ecg.head), (2, head));
+        // grok without a reading, or without the key at all: the single trace and its label, the bar still there
+        let mut p = several(false, Value::Null);
+        let mut a = app(p.clone(), None, None);
+        assert!(a.lanes.is_empty() && layout(&mut a, 90, 28).lanes.is_empty());
+        let text = draw(&mut a, 90, 28, 1001.0).join("\n");
+        assert!(text.contains("● 3.4K TOK/MIN · 2 SESSIONS") && !text.contains("● CLAUDE") && !text.contains("● GROK"), "{text}");
+        assert!(text.contains("GROK WEEK "), "{text}");
+        for i in 0..2 {
+            p["providers"][i].as_object_mut().unwrap().remove("activity");
+        }
+        assert!(app(p, None, None).lanes.is_empty(), "no activity key at all: the payload of today");
+        assert_eq!(act_of(Some(&json!({"tok_per_min": "x"}))), None);
+        // three providers: 4 + 4 + 3 of the 11 rows; a provider with a reading but no windows draws in the dim colour
+        let mut p = several(true, grok);
+        p["providers"][2]["windows"] = json!([]);
+        let mut a = app(p.clone(), None, None);
+        assert_eq!(a.lanes.iter().map(|l| (l.name.as_str(), l.pct)).collect::<Vec<_>>(), [("CLAUDE", Some(13.0)), ("CODEX", Some(64.0)), ("GROK", None)]);
+        assert_eq!((a.lanes[1].bpm(true), busy_of(a.lanes[1].act), label_of(a.lanes[1].act).as_deref()), (0.0, false, Some("IDLE 12M")));
+        let l = layout(&mut a, 90, 28);
+        assert_eq!((l.lanes.to_vec(), l.body_h), (vec![(2, 3, 3), (6, 7, 3), (10, 11, 2)], 10));
+        let text = draw(&mut a, 90, 28, 1001.0).join("\n");
+        assert!(text.contains("● CLAUDE  3.4K TOK/MIN · 2 SESSIONS") && text.contains("● CODEX  IDLE 12M") && text.contains("● GROK  610 TOK/MIN"), "{text}");
+        // 30x10: six rows, two per lane; the rates no longer fit, the names do
+        let l = layout(&mut a, 30, 10);
+        assert_eq!((l.lanes.to_vec(), l.trace_w), (vec![(1, 2, 1), (3, 4, 1), (5, 6, 1)], 12));
+        let rows = draw(&mut a, 30, 10, 1001.0);
+        assert!(rows[1].starts_with(" ● CLAUDE  ") && rows[3].starts_with(" ● CODEX  ") && rows[5].starts_with(" ● GROK  "), "{}", rows.join("\n"));
+        assert!(!rows.join("\n").contains("TOK") && rows[1].trim_end().ends_with("CLAUDE SESSION"), "{}", rows.join("\n"));
+        // a fourth lane needs an eighth row: on six it waits for a taller terminal
+        p["providers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "gemini", "activity": {"tok_per_min": 5, "idle_s": 0, "sessions": 1}, "windows": []}));
+        let mut a = app(p, None, None);
+        assert_eq!(a.lanes.len(), 4);
+        assert_eq!(layout(&mut a, 30, 10).lanes.len(), 3);
+        let text = draw(&mut a, 30, 10, 1001.0).join("\n");
+        assert!(text.contains("● GROK") && !text.contains("GEMINI"), "{text}");
+        assert_eq!(layout(&mut a, 90, 28).lanes, [(2, 3, 2), (5, 6, 2), (8, 9, 2), (11, 12, 1)]);
     }
 
     #[test]
