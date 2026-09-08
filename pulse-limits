@@ -6,6 +6,7 @@
 #   pulse-limits theme NAME    crt | modern | cyber | synth | analog
 #   pulse-limits refresh       force a live fetch now
 #   pulse-limits open          show or hide the monitor
+#   pulse-limits tui [claude]  the monitor in the terminal (q quits; `pulse-limits claude` is the same)
 #   pulse-limits status        print the current reading as JSON
 #   pulse-limits update        update to the latest release (Homebrew or git, whichever installed it)
 #   pulse-limits version       print the installed version
@@ -155,5 +156,8 @@ case "${1:-help}" in
     after=$("$0" version)
     if [[ "$before" == "$after" ]]; then echo "already up to date: $after"; else echo "updated: $before -> $after"; fi ;;
   -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  tui)     shift; [[ -x "$LIB/bin/pulse-tui" ]] || { echo "pulse-limits: bin/pulse-tui is not built. Run ./build.sh (it needs cargo: https://rustup.rs)" >&2; exit 1; }
+           PULSE_LIB="$LIB" exec "$LIB/bin/pulse-tui" "$@" ;;
+  claude)  shift; exec "$0" tui claude "$@" ;;
   *) echo "pulse-limits: unknown command '$1' (try: pulse-limits help)" >&2; exit 64 ;;
 esac
