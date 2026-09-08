@@ -60,6 +60,10 @@ monitor and the TUI show all of them.
 |:---:|:---:|:---:|
 | <img src="docs/crt.png" width="280" alt="CRT theme"> | <img src="docs/modern.png" width="280" alt="Modern theme"> | <img src="docs/synth.png" width="280" alt="Synth theme"> |
 
+| Cyber | Analog | |
+|:---:|:---:|:---:|
+| <img src="docs/cyber.png" width="280" alt="Cyber theme"> | <img src="docs/analog.png" width="280" alt="Analog theme"> | |
+
 ## TUI
 
 ```sh
