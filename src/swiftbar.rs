@@ -143,7 +143,22 @@ mod tests {
     use crate::payload::assemble;
     use crate::providers::testing::{Scratch, ENV};
     use crate::providers::{Doc, Window};
+    use crate::util::testing::{calls, fake_bin, Vars};
     use serde_json::{json, Value};
+
+    fn doc(name: &str, status: &str, hint: &str, wins: Vec<(&str, Value)>) -> Doc {
+        Doc {
+            provider: name.into(),
+            plan: if name == "claude" { "MAX 20X".into() } else { String::new() },
+            source: "CACHE".into(),
+            fetched: 1788876097,
+            status: status.into(),
+            hint: hint.into(),
+            windows: wins.into_iter().map(|(l, p)| Window { label: l.into(), pct: p, resets: None }).collect(),
+            credits: Value::Null,
+            history: vec![],
+        }
+    }
 
     #[test]
     fn rows() {
@@ -162,20 +177,9 @@ mod tests {
         let lib = s.0.join("lib");
         std::fs::create_dir_all(lib.join("bin")).unwrap();
         std::fs::write(lib.join("panel.html"), "x").unwrap();
-        let mk = |name: &str, status: &str, hint: &str, wins: Vec<(&str, Value)>| Doc {
-            provider: name.into(),
-            plan: if name == "claude" { "MAX 20X".into() } else { String::new() },
-            source: "CACHE".into(),
-            fetched: 1788876097,
-            status: status.into(),
-            hint: hint.into(),
-            windows: wins.into_iter().map(|(l, p)| Window { label: l.into(), pct: p, resets: None }).collect(),
-            credits: Value::Null,
-            history: vec![],
-        };
         let docs = vec![
-            mk("claude", "", "", vec![("SESSION", json!(13)), ("WEEK", json!(9.4))]),
-            mk("codex", "NO LOGIN", "NO CODEX LOGIN ON THIS MAC. RUN: codex login", vec![]),
+            doc("claude", "", "", vec![("SESSION", json!(13)), ("WEEK", json!(9.4))]),
+            doc("codex", "NO LOGIN", "NO CODEX LOGIN ON THIS MAC. RUN: codex login", vec![]),
         ];
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", Value::Null);
         let text = render(&b, &lib);
@@ -209,7 +213,7 @@ NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false col
         );
         assert_eq!(text, expected);
         // an error on the active provider: the label gets a "!" and turns red; no provider: "--"
-        let b = assemble(vec![mk("claude", "TOKEN EXPIRED", "x", vec![("SESSION", json!(90))])], vec!["claude".into()], "claude", "synth", Value::Null);
+        let b = assemble(vec![doc("claude", "TOKEN EXPIRED", "x", vec![("SESSION", json!(90))])], vec!["claude".into()], "claude", "synth", Value::Null);
         let text = render(&b, &lib);
         assert!(text.starts_with("● 90%! | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
         assert!(text.contains("\nPULSE LIMITS  ·  MAX 20X | "));
@@ -219,5 +223,48 @@ NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false col
         assert!(text.starts_with("● -- | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
         assert!(text.contains("\nNO PROVIDER SELECTED | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\n"));
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
+    }
+
+    #[test]
+    fn menubar_image_and_popover() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("swiftbar-bin");
+        let mut vars = Vars::default();
+        vars.set("CLAUDE_PROJECTS_DIR", s.0.join("none"));
+        let lib = s.0.join("lib");
+        std::fs::create_dir_all(lib.join("bin")).unwrap();
+        std::fs::write(lib.join("panel.html"), "x").unwrap();
+        let bin = lib.join("bin").join("pulse-limits").display().to_string();
+        let b = assemble(vec![doc("claude", "", "", vec![("SESSION", json!(70))])], vec!["claude".into()], "claude", "crt", Value::Null);
+        // the helpers built: one PNG per appearance in the amber tone, and the click runs `open`
+        let menubar = fake_bin(&lib.join("bin"), "pulse-menubar", "printf '22 18 QUJD\\n'");
+        fake_bin(&lib.join("bin"), "pulse-popover", "");
+        let text = render(&b, &lib);
+        assert!(
+            text.starts_with(&format!(
+                " | font=Menlo size=12 trim=false color=#A85E00,#FFB000 image=QUJD,QUJD width=22 height=18 bash={bin} param1=open terminal=false\n---\n"
+            )),
+            "{text}"
+        );
+        assert_eq!(calls(&menubar), vec!["70 70% #A85E00 #A85E00 #c9ced2", "70 70% #FFB000 #FFB000 #3a4044"]);
+        assert!(text.contains("\nSESSION  ██████████████░░░░░░  70%   RESETS IN ? | font=Menlo size=12 trim=false color=#A85E00,#FFB000\n"));
+        // a helper that fails, or prints too little: the text title stays
+        fake_bin(&lib.join("bin"), "pulse-menubar", "exit 1");
+        assert!(render(&b, &lib).starts_with("● 70% | font=Menlo size=12 trim=false color=#A85E00,#FFB000  bash="));
+        fake_bin(&lib.join("bin"), "pulse-menubar", "printf '22 18\\n'");
+        assert!(render(&b, &lib).starts_with("● 70% | "));
+        // nothing enabled but a document with an error: its status and hint under the menu; no name in the header
+        let b = assemble(vec![doc("codex", "NO LOGIN", "RUN: codex login", vec![])], vec![], "codex", "crt", Value::Null);
+        let text = render(&b, &lib);
+        assert!(text.contains("\nPULSE LIMITS | "));
+        assert!(text.contains(
+            "\nNO LOGIN | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nRUN: codex login | font=Menlo size=12 trim=false color=#707070,#8C8C8C\n"
+        ));
+        // an error without a hint in a provider block, in the red tone
+        let b = assemble(vec![doc("grok", "HTTP 500", "", vec![("WEEK", json!(90))])], vec!["grok".into()], "grok", "crt", Value::Null);
+        let text = render(&b, &lib);
+        assert!(text.ends_with(
+            "---\nGROK | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff\nHTTP 500 | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nWEEK     ██████████████████░░  90%   RESETS IN ? | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\n"
+        ), "{text}");
     }
 }

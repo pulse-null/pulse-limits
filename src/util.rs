@@ -202,6 +202,10 @@ pub fn tone(pct: i64) -> Tone {
 }
 
 pub fn is_macos() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = testing::MACOS.with(std::cell::Cell::get) {
+        return forced;
+    }
     cfg!(target_os = "macos")
 }
 
@@ -243,16 +247,21 @@ pub fn lib_dir() -> PathBuf {
     if let Some(d) = env_path("PULSE_LIB") {
         return d;
     }
+    lib_dir_of(env::args_os().next().map(PathBuf::from), env::current_exe().ok())
+}
+
+/// The lookup itself, from the path we were invoked by and the running executable.
+fn lib_dir_of(argv0: Option<PathBuf>, exe: Option<PathBuf>) -> PathBuf {
     let has_panel = |d: &Path| d.join("panel.html").is_file();
     let mut candidates: Vec<PathBuf> = vec![];
-    if let Some(argv0) = env::args_os().next().map(PathBuf::from) {
+    if let Some(argv0) = argv0 {
         if argv0.components().count() > 1 {
             candidates.push(if argv0.is_absolute() { argv0 } else { env::current_dir().unwrap_or_default().join(argv0) });
         } else if let Some(found) = which(&argv0.to_string_lossy()) {
             candidates.push(found);
         }
     }
-    if let Ok(exe) = env::current_exe() {
+    if let Some(exe) = exe {
         if let Ok(real) = exe.canonicalize() {
             candidates.push(real);
         }
@@ -379,8 +388,98 @@ pub fn tilde(p: &Path) -> String {
 }
 
 #[cfg(test)]
+pub mod testing {
+    //! Seams for the tests: a pretend OS, environment variables put back on drop, and fake
+    //! commands that log their arguments instead of touching the machine.
+    use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        pub static MACOS: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    /// `is_macos()` answers `macos` on this thread until the guard drops.
+    pub struct Os;
+
+    pub fn pretend(macos: bool) -> Os {
+        MACOS.with(|m| m.set(Some(macos)));
+        Os
+    }
+
+    impl Drop for Os {
+        fn drop(&mut self) {
+            MACOS.with(|m| m.set(None));
+        }
+    }
+
+    /// Environment variables for one test, put back when dropped. Hold `providers::testing::ENV` first.
+    #[derive(Default)]
+    pub struct Vars(Vec<(String, Option<OsString>)>);
+
+    impl Vars {
+        pub fn set(&mut self, name: &str, value: impl AsRef<OsStr>) -> &mut Self {
+            self.0.push((name.into(), std::env::var_os(name)));
+            std::env::set_var(name, value);
+            self
+        }
+
+        pub fn unset(&mut self, name: &str) -> &mut Self {
+            self.0.push((name.into(), std::env::var_os(name)));
+            std::env::remove_var(name);
+            self
+        }
+    }
+
+    impl Drop for Vars {
+        fn drop(&mut self) {
+            for (name, old) in self.0.drain(..).rev() {
+                match old {
+                    Some(v) => std::env::set_var(&name, v),
+                    None => std::env::remove_var(&name),
+                }
+            }
+        }
+    }
+
+    /// `dir/name`: a bash script that appends its arguments to `dir/name.log` (one line per
+    /// call, space-joined) and then runs `script`. Returns the log. With PATH set to `dir`
+    /// alone, the code under test finds these and nothing real; the script keeps its own PATH.
+    pub fn fake_bin(dir: &Path, name: &str, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join(format!("{name}.log"));
+        std::fs::create_dir_all(dir).unwrap();
+        let text = format!("#!/bin/bash\nPATH=/usr/bin:/bin\nprintf '%s\\n' \"$*\" >> '{}'\n{script}\n", log.display());
+        std::fs::write(dir.join(name), text).unwrap();
+        std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        log
+    }
+
+    /// The fake's calls so far.
+    pub fn calls(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Waits up to three seconds for a detached fake to leave a file.
+    pub fn wait_for(p: &Path) -> bool {
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(3) {
+            if p.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::testing::{calls, fake_bin, pretend, Vars};
     use super::*;
+    use crate::providers::testing::{Scratch, ENV};
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn epoch_parsing() {
@@ -400,6 +499,31 @@ mod tests {
         for e in [0, 951782400, 1788881706, 4102444800, -86400] {
             assert_eq!(epoch_of(&iso_utc(e)), Some(e));
         }
+    }
+
+    #[test]
+    fn epoch_edge_cases() {
+        assert_eq!(epoch_of("2026-09-08T13:40:00."), None, "a dot with no digits");
+        assert_eq!(epoch_of_f("2026-09-08T13:40:00.5Z"), Some(1788874800.5));
+        assert_eq!(epoch_of_f("2026-09-08T13:40:00.1234567891"), epoch_of_f("2026-09-08T13:40:00.123456789"), "nine digits count");
+        assert_eq!(epoch_of("2026-09-08T08:10:00-05:30"), Some(1788874800));
+        assert_eq!(epoch_of("2026-09-08T13:40:00+ab:cd"), None);
+        assert_eq!(epoch_of("2026-09-08T13:40:00+02:0"), None);
+        assert_eq!(epoch_of("2026-09-08T13:40:00+02x00"), None);
+        assert_eq!(epoch_of("2026-09-32T13:40:00Z"), None);
+        assert_eq!(epoch_of("2026-00-08T13:40:00Z"), None);
+        assert_eq!(epoch_of("2026-09-08T24:40:00Z"), None);
+        assert_eq!(epoch_of("2026-09-08T13:60:00Z"), None);
+        assert_eq!(epoch_of("2026-09-08T13:40:61Z"), None);
+        assert_eq!(epoch_of("abcd-09-08T13:40:00Z"), None);
+        assert_eq!(epoch_of("2026-09-08 13:40:00Z"), None);
+        assert_eq!(epoch_of("2026-09-08T13:40:60Z"), Some(1788874860), "a leap second parses");
+        // before 1970 and before year 1: both era branches, both ways
+        assert_eq!(epoch_of("1969-12-31T23:59:59Z"), Some(-1));
+        assert_eq!(epoch_of("0000-01-01T00:00:00Z"), Some(-62167219200));
+        assert_eq!(iso_utc(-62167219200), "0000-01-01T00:00:00Z");
+        assert_eq!(civil_from_days(days_from_civil(-1, 3, 1)), (-1, 3, 1));
+        assert_eq!(civil_from_days(days_from_civil(2000, 2, 29)), (2000, 2, 29));
     }
 
     #[test]
@@ -426,5 +550,206 @@ mod tests {
         assert_eq!(round_half_up(15.7), 16);
         assert_eq!(round_half_up(15.5), 16);
         assert_eq!(round_half_up(15.49), 15);
+    }
+
+    #[test]
+    fn format_edges() {
+        assert_eq!(span(0), "0M");
+        assert_eq!(span(-5), "0M");
+        assert_eq!(span(59), "0M");
+        assert_eq!(span(3600), "1H 00M");
+        assert_eq!(span(86400), "1D 00H");
+        assert_eq!(short(-1), "0S");
+        assert_eq!(short(0), "0S");
+        assert_eq!(short(60), "1M");
+        assert_eq!(short(86400), "1D");
+        assert_eq!(fmt_k(0), "0");
+        assert_eq!(fmt_k(999), "999");
+        assert_eq!(fmt_k(1000), "1.0K");
+        assert_eq!(fmt_k(9999), "10.0K");
+        assert_eq!(fmt_k(10000), "10K");
+        assert_eq!(fmt_k(1_234_567), "1235K");
+        assert_eq!(bar(-10, 4), "░░░░");
+        assert_eq!(bar(50, 0), "");
+        assert_eq!(hhmm(1788874800, 0), "13:40");
+        assert_eq!(hhmm(1788874800, 7200), "15:40");
+        assert_eq!(hhmm(-1, 0), "23:59");
+        assert_eq!(hhmmss(1788874884, 0), "13:41:24");
+        assert_eq!(hhmmss(-1, 0), "23:59:59");
+        assert_eq!(local_stamp(1788874800, 7200), "2026-09-08 15:40");
+        assert_eq!(local_stamp(1788874800, -50400), "2026-09-07 23:40");
+        assert_eq!(tone(0), Tone::Green);
+        assert_eq!(tone(100), Tone::Red);
+        assert_eq!(upper("MiXed é"), "MIXED é");
+        assert_eq!(round_half_up(-0.5), 0);
+        assert_eq!(round_half_up(-0.6), -1);
+        assert_eq!(base64_encode(b"hi"), "aGk=");
+        assert_eq!(base64_decode("aG\nk="), Some(b"hi".to_vec()));
+        assert_eq!(base64_decode("*"), None);
+        assert!(now() > 1_700_000_000);
+        assert!(now_f() >= now() as f64);
+    }
+
+    #[test]
+    fn pretend_os() {
+        assert_eq!(is_macos(), cfg!(target_os = "macos"));
+        {
+            let _mac = pretend(true);
+            assert!(is_macos());
+        }
+        {
+            let _linux = pretend(false);
+            assert!(!is_macos());
+        }
+        assert_eq!(is_macos(), cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn local_offset_reads_date() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("util-date");
+        let bin = s.0.join("bin");
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin);
+        let log = fake_bin(&bin, "date", "printf '+0200\\n'");
+        assert_eq!(local_offset(), 7200);
+        assert_eq!(calls(&log), vec!["+%z"]);
+        fake_bin(&bin, "date", "printf '%s\\n' -0530");
+        assert_eq!(local_offset(), -19800);
+        fake_bin(&bin, "date", "printf 'UTC\\n'");
+        assert_eq!(local_offset(), 0);
+        fake_bin(&bin, "date", "exit 1");
+        assert_eq!(local_offset(), 0);
+        fs::remove_file(bin.join("date")).unwrap();
+        assert_eq!(local_offset(), 0, "no date at all");
+    }
+
+    #[test]
+    fn xdg_and_home() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("util-xdg");
+        let mut vars = Vars::default();
+        assert_eq!(cache_dir(), s.0.join("cache").join("pulse-limits"));
+        assert_eq!(config_dir(), s.0.join("config").join("pulse-limits"));
+        vars.set("HOME", &s.0).set("XDG_CACHE_HOME", "").unset("XDG_CONFIG_HOME");
+        assert_eq!(cache_dir(), s.0.join(".cache").join("pulse-limits"));
+        assert_eq!(config_dir(), s.0.join(".config").join("pulse-limits"));
+        assert_eq!(env_path("XDG_CACHE_HOME"), None);
+        assert_eq!(env_path("XDG_CONFIG_HOME"), None);
+        assert_eq!(env_path("HOME"), Some(s.0.clone()));
+        assert_eq!(tilde(&s.0.join(".config").join("x")), "~/.config/x");
+        assert_eq!(tilde(Path::new("/etc/x")), "/etc/x");
+        vars.unset("HOME");
+        assert_eq!(home(), PathBuf::from(""));
+        assert_eq!(tilde(Path::new("/etc/x")), "/etc/x", "no HOME: nothing is shortened");
+    }
+
+    #[test]
+    fn lib_dir_layouts() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("util-lib");
+        let mut vars = Vars::default();
+        vars.unset("PULSE_LIB");
+        let mk = |p: &Path, panel: bool| {
+            let exe = p.join("bin").join("pulse-limits");
+            fs::create_dir_all(p.join("bin")).unwrap();
+            fs::write(&exe, "").unwrap();
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+            if panel {
+                fs::write(p.join("panel.html"), "x").unwrap();
+            }
+            exe
+        };
+        // a checkout: panel.html one folder up from the binary, by the invoked path or the resolved one
+        let co = s.0.join("checkout");
+        let exe = mk(&co, true);
+        assert_eq!(lib_dir_of(Some(exe.clone()), None), co);
+        assert_eq!(lib_dir_of(None, Some(exe.clone())), co.canonicalize().unwrap());
+        // ~/.local/bin/pulse-limits -> the checkout: the link's folder has no panel, the target's does
+        let local = s.0.join(".local").join("bin");
+        fs::create_dir_all(&local).unwrap();
+        std::os::unix::fs::symlink(&exe, local.join("pulse-limits")).unwrap();
+        assert_eq!(lib_dir_of(Some(local.join("pulse-limits")), Some(local.join("pulse-limits"))), co.canonicalize().unwrap());
+        // Homebrew: bin/pulse-limits -> Cellar/..., reached through opt/pulse-limits without resolving the link
+        let brew = s.0.join("brew");
+        let keg = brew.join("Cellar").join("pulse-limits").join("0.5.6");
+        let cellar = mk(&keg.join("libexec"), true);
+        fs::create_dir_all(brew.join("opt")).unwrap();
+        fs::create_dir_all(brew.join("bin")).unwrap();
+        std::os::unix::fs::symlink(&keg, brew.join("opt").join("pulse-limits")).unwrap();
+        std::os::unix::fs::symlink(&cellar, brew.join("bin").join("pulse-limits")).unwrap();
+        assert_eq!(lib_dir_of(Some(brew.join("bin").join("pulse-limits")), None), brew.join("opt").join("pulse-limits").join("libexec"));
+        // Nix: bin/pulse-limits -> ../libexec/pulse-limits/bin/pulse-limits, panel next to that bin/
+        let nix = s.0.join("nix").join("store").join("abc-pulse-limits");
+        mk(&nix.join("libexec").join("pulse-limits"), true);
+        fs::create_dir_all(nix.join("bin")).unwrap();
+        std::os::unix::fs::symlink(Path::new("../libexec/pulse-limits/bin/pulse-limits"), nix.join("bin").join("pulse-limits")).unwrap();
+        assert_eq!(
+            lib_dir_of(Some(nix.join("bin").join("pulse-limits")), Some(nix.join("bin").join("pulse-limits"))),
+            nix.join("libexec").join("pulse-limits").canonicalize().unwrap()
+        );
+        // invoked by bare name: PATH decides; a relative path: the current folder
+        vars.set("PATH", co.join("bin"));
+        assert_eq!(lib_dir_of(Some(PathBuf::from("pulse-limits")), None), co);
+        assert_eq!(lib_dir_of(Some(PathBuf::from("nope")), None), PathBuf::from("."));
+        assert_eq!(lib_dir_of(None, None), PathBuf::from("."));
+        let cwd = env::current_dir().unwrap();
+        assert_eq!(lib_dir_of(Some(PathBuf::from("sub/bin/pulse-limits")), None), cwd.join("sub"));
+        // no panel anywhere: two folders up from the first candidate
+        let bare = mk(&s.0.join("bare"), false);
+        assert_eq!(lib_dir_of(Some(bare.clone()), Some(bare)), s.0.join("bare"));
+        assert_eq!(clean(Path::new("./a/../b")), PathBuf::from("b"));
+        // PULSE_LIB wins; empty does not count
+        vars.set("PULSE_LIB", s.0.join("forced"));
+        assert_eq!(lib_dir(), s.0.join("forced"));
+        vars.set("PULSE_LIB", "");
+        assert_ne!(lib_dir(), PathBuf::from(""));
+    }
+
+    #[test]
+    fn commands_and_files() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("util-cmd");
+        let bin = s.0.join("bin");
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin);
+        let pgrep = fake_bin(&bin, "pgrep", "[ \"$2\" = SwiftBar ]");
+        assert!(process_running("SwiftBar"));
+        assert!(!process_running("waybar"));
+        assert_eq!(calls(&pgrep), vec!["-x SwiftBar", "-x waybar"]);
+        assert_eq!(command_output("pgrep", &["-x", "SwiftBar"]), Some(String::new()));
+        assert_eq!(command_output("pgrep", &["-x", "nope"]), None);
+        assert_eq!(command_output("no-such-command-here", &[]), None);
+        let say = fake_bin(&bin, "say", "printf '  %s \\n' \"$1\"");
+        assert_eq!(command_output("say", &["hi"]), Some("hi".into()));
+        assert!(run_quiet("say", &["x"]));
+        assert!(!run_quiet("pgrep", &["-x", "nope"]));
+        assert!(!run_quiet("no-such-command-here", &[]));
+        assert!(!process_running("no-such-command-here"));
+        assert_eq!(calls(&say), vec!["hi", "x"]);
+        assert_eq!(which("say"), Some(bin.join("say")));
+        assert_eq!(which("no-such-command-here"), None);
+        vars.unset("PATH");
+        assert_eq!(which("say"), None);
+        // the executable bit, on files only
+        assert!(is_executable(&bin.join("say")));
+        fs::write(bin.join("plain"), "x").unwrap();
+        assert!(!is_executable(&bin.join("plain")));
+        assert!(!is_executable(&bin));
+        assert!(!is_executable(&bin.join("missing")));
+        // mtime, read_trimmed, write_atomic
+        assert_eq!(mtime(&bin.join("missing")), None);
+        assert_eq!(mtime_f(&bin.join("missing")), None);
+        assert!((now() - mtime(&bin.join("plain")).unwrap()).abs() < 5);
+        assert!((now_f() - mtime_f(&bin.join("plain")).unwrap()).abs() < 5.0);
+        assert_eq!(read_trimmed(&bin.join("missing")), None);
+        fs::write(bin.join("t"), " a b \n\n").unwrap();
+        assert_eq!(read_trimmed(&bin.join("t")), Some("a b".into()));
+        let deep = s.0.join("new").join("dir").join("f.json");
+        write_atomic(&deep, b"{}").unwrap();
+        assert_eq!(fs::read_to_string(&deep).unwrap(), "{}");
+        assert_eq!(fs::read_dir(deep.parent().unwrap()).unwrap().count(), 1, "no temp file left behind");
+        assert!(write_atomic(&bin.join("plain").join("sub").join("f"), b"x").is_err(), "a file where the parent should be");
+        assert!(write_atomic(Path::new(""), b"x").is_err(), "no path at all");
     }
 }

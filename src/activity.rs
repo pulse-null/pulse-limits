@@ -137,6 +137,9 @@ pub fn measure() -> Activity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::testing::{Scratch, ENV};
+    use crate::util::testing::Vars;
+    use crate::util::{iso_utc, now};
 
     fn fixture(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pl-rust-act-{tag}-{}", std::process::id()));
@@ -196,5 +199,28 @@ mod tests {
         fs::write(d.join("proj-a").join("s.jsonl"), &s).unwrap();
         assert_eq!(output_tokens(&d, 1788874800.0, 1788874900.0), 5);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn measure_and_dirs() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("activity");
+        let mut vars = Vars::default();
+        vars.set("HOME", &s.0).unset("CLAUDE_PROJECTS_DIR");
+        assert_eq!(projects_dir(), s.0.join(".claude").join("projects"));
+        let a = measure();
+        assert_eq!((a.tok_per_min, a.idle_s, a.sessions), (0, 86_400 * 365, 0));
+        assert_eq!(a.to_json().to_string(), "{\"tok_per_min\":0,\"idle_s\":31536000,\"sessions\":0}");
+        let p = s.0.join("p");
+        vars.set("CLAUDE_PROJECTS_DIR", &p);
+        assert_eq!(projects_dir(), p);
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("s.jsonl"), line(&iso_utc(now() - 10), "m", "300")).unwrap();
+        let a = measure();
+        assert_eq!((a.tok_per_min, a.sessions), (300, 1));
+        assert!(a.idle_s <= 5);
+        // wider windows read a deeper tail
+        assert_eq!(output_tokens(&p, now_f() - 600.0, now_f()), 300);
+        assert_eq!(output_tokens(&p, now_f() - 3600.0, now_f()), 300);
     }
 }

@@ -107,6 +107,8 @@ pub fn estimate(pct: f64, fetched: i64) -> Estimate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::testing::{Scratch, ENV};
+    use crate::util::testing::Vars;
 
     #[test]
     fn calib_rules() {
@@ -174,5 +176,31 @@ mod tests {
         let e = estimate_with(&f, &d, 99.0, 1788876097, 1788876300.0);
         assert_eq!(e.pct_est, 100.0);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn corrupt_file_bounds_and_defaults() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("estimate");
+        let mut vars = Vars::default();
+        vars.set("CLAUDE_PROJECTS_DIR", s.0.join("none"));
+        assert_eq!(calib_file(), s.cache().join("calib.json"));
+        // a corrupt file starts over: a fresh anchor is written
+        std::fs::write(calib_file(), "{not json").unwrap();
+        let e = estimate(13.0, 1788876097);
+        assert_eq!((e.pct_est, e.calibrated, e.samples), (13.0, false, 0));
+        assert_eq!(load(&calib_file()), Some(Calib { anchor_pct: 13.0, anchor_at: 1788876097, k: 0.0, samples: 0 }));
+        // a later reading moves the anchor on disk
+        let e = estimate(14.0, 1788876397);
+        assert_eq!(load(&calib_file()).unwrap().anchor_at, 1788876397);
+        assert_eq!(e.to_json(None).to_string(), "{\"pct_est\":14.0,\"pct_api\":14.0,\"calibrated\":false,\"k\":0.0,\"samples\":0,\"tokens_since\":0}");
+        // k bounds: a slope too flat is not a sample; a drop never scans
+        let mut c = Calib { anchor_pct: 10.0, anchor_at: 1000, k: 0.0, samples: 0 };
+        assert!(update(&mut c, 11.0, 1300, |_, _| 1_000_000_000)); // 1e-9
+        assert_eq!((c.k, c.samples), (0.0, 0));
+        update(&mut c, 12.0, 1600, |_, _| 5000);
+        assert_eq!(c.samples, 1);
+        update(&mut c, 1.0, 1900, |_, _| panic!("a drop never scans"));
+        assert_eq!((c.anchor_pct, c.anchor_at, c.samples), (1.0, 1900, 1));
     }
 }
