@@ -53,8 +53,18 @@ pub fn swiftbar_installed() -> bool {
 pub fn install(lib: &Path) -> i32 {
     if is_macos() {
         if !swiftbar_installed() {
-            eprintln!("SwiftBar is not installed:  brew install --cask swiftbar");
-            return 1;
+            // the one prerequisite Homebrew's formula cannot pull in itself: a cask
+            if which("brew").is_some() {
+                println!("installing SwiftBar with Homebrew");
+                let ok = std::process::Command::new("brew").args(["install", "--cask", "swiftbar"]).status().map(|s| s.success()).unwrap_or(false);
+                if !ok || !swiftbar_installed() {
+                    eprintln!("could not install SwiftBar; get it from https://github.com/swiftbar/SwiftBar/releases and re-run");
+                    return 1;
+                }
+            } else {
+                eprintln!("SwiftBar is not installed: brew install --cask swiftbar, or https://github.com/swiftbar/SwiftBar/releases");
+                return 1;
+            }
         }
         if !is_executable(&lib.join("bin").join("pulse-popover")) || !is_executable(&lib.join("bin").join("pulse-menubar")) {
             let ok = std::process::Command::new(lib.join("build.sh")).current_dir(lib).status().map(|s| s.success()).unwrap_or(false);

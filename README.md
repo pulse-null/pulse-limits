@@ -20,48 +20,38 @@ monitor, or run it in a terminal tile with `pulse-limits tui`.
 
 ## Install
 
-Both platforms get the same two things: the `pulse-limits` command, with the terminal
-monitor, and the bar item. The bar item is optional: `pulse-limits bar off` removes it,
-`bar on` brings it back.
+One command per platform. Both give you the same two things: the `pulse-limits`
+command, with the terminal monitor, and the bar item. The bar item is optional:
+`pulse-limits bar off` removes it, `bar on` brings it back.
 
 ### macOS
 
-Needs SwiftBar and a login in Claude Code, the Codex CLI or the Grok CLI.
-
 ```sh
-brew install --cask swiftbar
-brew install dnacenta/tap/pulse-limits    # builds the binary with cargo
-pulse-limits install
+brew install dnacenta/tap/pulse-limits && pulse-limits install
 ```
 
-Or the one-line installer (needs [cargo](https://rustup.rs) and installs SwiftBar if missing):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash
-```
-
-Or by hand: `git clone https://github.com/dnacenta/pulse-limits.git && cd pulse-limits && ./build.sh && ./bin/pulse-limits install`.
+Homebrew builds the binary with its Rust toolchain; `pulse-limits install` adds SwiftBar
+if you do not have it, links the plugin and starts it. You need a login in Claude Code,
+the Codex CLI or the Grok CLI. Update with `pulse-limits update`.
 
 ### Linux
 
-Needs a login in a CLI as above; for the bar item, Waybar and a Nerd Font.
-
-```sh
-nix profile install github:dnacenta/pulse-limits
-pulse-limits bar on
-```
-
-Or the one-line installer (needs git and cargo; clones into `~/.local/share/pulse-limits`,
-links the command into `~/.local/bin`):
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash
 ```
 
-Or by hand: `git clone … && cd pulse-limits && ./build.sh && ./bin/pulse-limits bar on`.
+No prerequisites. The installer adds what is missing with your package manager (git, a
+C linker, procps, xdg-utils; Waybar when you are on a Wayland session without one),
+Rust with rustup when there is no cargo, the Nerd Font symbols when no Nerd Font is
+installed, then clones into `~/.local/share/pulse-limits`, builds, links the command into
+`~/.local/bin` and writes the Waybar module. Debian, Ubuntu, Arch and derivatives,
+Fedora, openSUSE and Alpine are known to it; on a box with Nix it installs the flake
+instead (`nix profile install github:dnacenta/pulse-limits` by hand does the same).
+`PULSE_LIMITS_NO_SUDO=1` makes it only tell you what to install. Update with
+`pulse-limits update`.
 
-`bar on` writes `~/.config/waybar/pulse-limits.jsonc` and prints the two lines to add to
-your own Waybar config; it never edits `config.jsonc` or `style.css`:
+The Waybar side is two lines in your own config, which the installer prints and never
+edits (Omarchy manages `config.jsonc` and `style.css`):
 
 ```jsonc
 "include": ["~/.config/waybar/pulse-limits.jsonc"],
@@ -70,18 +60,11 @@ your own Waybar config; it never edits `config.jsonc` or `style.css`:
 
 The ring is Waybar's own `format-icons` picked by percentage, using the Nerd Font circle
 slices, and the tone travels as a CSS class (`warn`, `crit`, `stale`, `dead`) you can
-colour in `style.css`. Click opens the monitor in the browser. Update with
-`pulse-limits update` (git and Homebrew installs) or by rebuilding the flake.
+colour in `style.css`. Click opens the monitor in the browser. The same binary, module
+and paths serve every distro; Omarchy 4 replaced Waybar with its own bar, so the module
+targets Omarchy 3, Hyprland and Sway setups on Waybar.
 
-**Any distro.** The binary, the Waybar module and the paths are the same everywhere;
-only how you get the binary differs. At runtime it needs `pgrep` (procps) and
-`xdg-open` (xdg-utils), which every desktop has. Building needs Rust 1.85 or newer:
-
-| Distro | Get the binary |
-|---|---|
-| NixOS, or any box with Nix | `nix profile install github:dnacenta/pulse-limits`; nothing else to install |
-| Arch, Omarchy, CachyOS | `pacman -S rust git waybar ttf-nerd-fonts-symbols`, then the installer or `./build.sh` (Arch's `rust` is current) |
-| Debian, Ubuntu | their packaged `rustc` is too old; install Rust from [rustup.rs](https://rustup.rs), `apt install git curl xdg-utils procps`, then the installer or `./build.sh`; Waybar and a Nerd Font from their sites |
+By hand, on either platform: `git clone https://github.com/dnacenta/pulse-limits.git && cd pulse-limits && ./build.sh && ./bin/pulse-limits install` (needs cargo).
 
 ## Providers
 
@@ -137,7 +120,7 @@ minutes, so it works with no bar at all and never bypasses the API throttle.
 ## Commands
 
 ```
-pulse-limits install / uninstall   set up or remove the bar item (SwiftBar or Waybar)
+pulse-limits install / uninstall   set up or remove the bar item (SwiftBar, installed if missing, or Waybar)
 pulse-limits bar on|off|status     the bar item alone
 pulse-limits provider NAME         enable or disable claude | codex | grok
 pulse-limits theme NAME            crt | modern | cyber | synth | analog
