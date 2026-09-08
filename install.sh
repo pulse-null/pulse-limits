@@ -9,7 +9,7 @@
 # xdg-utils; Waybar when you are on a Wayland session without one), Rust with rustup when
 # there is no cargo, the Nerd Font symbols when no Nerd Font is installed, then clones (or
 # updates) the repo into ~/.local/share/pulse-limits, builds, links the command into
-# ~/.local/bin and writes the Waybar module (`pulse-limits bar on`). On a box with Nix it
+# ~/.local/bin and wires Waybar (`pulse-limits bar on`). On a box with Nix it
 # just installs the flake. macOS: Homebrew is the package (`brew install
 # pulse-null/tap/pulse-limits && pulse-limits install`); this script is the git route there,
 # and bootstraps rustup and SwiftBar the same way.
@@ -139,7 +139,7 @@ if [[ "$OS" != "Darwin" ]] && have nix && ! have cargo; then
   nix --extra-experimental-features 'nix-command flakes' profile install "github:pulse-null/pulse-limits"
   ensure_nerd_font
   pulse-limits bar on
-  say "Installed. Add the module to your Waybar config as printed above, then: pulse-limits refresh"
+  say "Installed. bar on wired Waybar, or printed the Home Manager lines to declare instead. Then: pulse-limits refresh"
   exit 0
 fi
 
@@ -172,5 +172,5 @@ else
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) warn "~/.local/bin is not in your PATH; add it so Waybar can run pulse-limits" ;; esac
   ensure_nerd_font
   "$DIR/bin/pulse-limits" bar on
-  say "Installed. Add the module to your Waybar config as printed above, then: pulse-limits refresh"
+  say "Installed. bar on wired Waybar, or printed what to add by hand. Then: pulse-limits refresh"
 fi

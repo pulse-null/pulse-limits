@@ -128,6 +128,9 @@ Plumbing, for scripts: `waybar`, `swiftbar`, `payload`, `activity`, `estimate PC
 - **Token expired**: open that CLI once; it refreshes its own token.
 - **Rate limited**: the usage endpoints have small per-account quotas, shared by every
   machine on the account; the binary backs off and keeps the last reading.
+- **Waybar (Linux)**: `bar on` edits `~/.config/waybar/config.jsonc` (or `config`) and
+  `style.css`, keeping a `.pulse-limits.bak` of each beside them, and `bar off` puts them
+  back; on NixOS the Home Manager module wires it instead.
 
 ## License
 
