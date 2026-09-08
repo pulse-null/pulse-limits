@@ -154,7 +154,7 @@ mod tests {
         assert!(b.payload.get("estimate").is_none());
         // nothing enabled
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
-        assert_eq!((b.str("status").as_str(), b.have_data, b.s_pct), ("NO PROVIDER", false, 0));
+        assert_eq!((b.str("status").as_str(), b.have_data, b.s_pct), ("NO PROVIDER SELECTED", false, 0));
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 0);
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }

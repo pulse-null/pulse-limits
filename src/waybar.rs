@@ -134,7 +134,7 @@ mod tests {
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert_eq!((v["text"].as_str(), v["class"].as_str(), v["percentage"].as_i64()), (Some("--"), Some("dead"), Some(0)));
-        assert_eq!(v["tooltip"], "PULSE LIMITS\n? NO PROVIDER\nENABLE ONE: pulse-limits provider grok, claude or codex");
+        assert_eq!(v["tooltip"], "PULSE LIMITS\n? NO PROVIDER SELECTED");
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }
 }

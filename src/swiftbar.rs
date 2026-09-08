@@ -110,8 +110,10 @@ pub fn render(b: &Built, lib: &Path) -> String {
         );
     }
     if n_enabled == 0 {
-        line(&mut out, &format!("?{status}  ERROR"), &format!("{MONO} color={C_RED}"));
-        line(&mut out, &hint, &format!("{MONO} color={C_DIM}"));
+        line(&mut out, &status, &format!("{MONO} color={C_RED}"));
+        if !hint.is_empty() {
+            line(&mut out, &hint, &format!("{MONO} color={C_DIM}"));
+        }
     }
     // one block per provider: its plan, its error if any, its windows
     for d in b.docs.iter().filter(|d| b.enabled.contains(&d.provider)) {
@@ -122,7 +124,7 @@ pub fn render(b: &Built, lib: &Path) -> String {
         }
         line(&mut out, &h, &format!("{MONO} color={C_HEAD}"));
         if !d.status.is_empty() {
-            line(&mut out, &format!("?{}  ERROR", d.status), &format!("{MONO} color={C_RED}"));
+            line(&mut out, &d.status, &format!("{MONO} color={C_RED}"));
             if !d.hint.is_empty() {
                 line(&mut out, &d.hint, &format!("{MONO} color={C_DIM}"));
             }
@@ -199,7 +201,7 @@ SESSION  ███░░░░░░░░░░░░░░░░░  13%   RES
 WEEK     ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
 ---
 CODEX | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
-?NO LOGIN  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C
+NO LOGIN | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C
 NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false color=#707070,#8C8C8C
 ",
             panel = lib.join("panel.html").display(),
@@ -211,13 +213,11 @@ NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false col
         let text = render(&b, &lib);
         assert!(text.starts_with("● 90%! | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
         assert!(text.contains("\nPULSE LIMITS  ·  MAX 20X | "));
-        assert!(text.contains("\n?TOKEN EXPIRED  ERROR | "));
+        assert!(text.contains("\nTOKEN EXPIRED | "));
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let text = render(&b, &lib);
         assert!(text.starts_with("● -- | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
-        assert!(text.contains(
-            "\n?NO PROVIDER  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nENABLE ONE: pulse-limits provider grok, claude or codex | "
-        ));
+        assert!(text.contains("\nNO PROVIDER SELECTED | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\n"));
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }
 }
