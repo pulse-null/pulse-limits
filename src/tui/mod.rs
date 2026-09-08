@@ -448,13 +448,20 @@ fn label_of(act: Act) -> Option<String> {
     })
 }
 
+/// A provider's headline window: SESSION, or its first one when it has none (a weekly pool only).
+fn head_i(ws: &[Win]) -> Option<usize> {
+    ws.iter().position(|w| w.label == "SESSION").or(if ws.is_empty() { None } else { Some(0) })
+}
+
 /// One trace of several: a provider with an activity reading of its own, when more than one has one.
 struct Lane {
     key: String,  // the provider as the payload spells it
     name: String, // upper-cased: the label
     active: bool, // the active provider's lane follows the feed's live reading
     act: Act,
-    pct: Option<f64>, // its session window, for the colour
+    pct: Option<f64>,  // its headline window, for the colour
+    head: Option<Win>, // that window, qualified, for the headline beside the trace; None for the active lane (the big number's) and with no windows
+    status: String,    // why there is no window, when there is none
     ecg: Ecg,
 }
 
@@ -507,9 +514,20 @@ impl App {
         let provider = self.str("provider");
         self.multi = providers.len() > 1 && !provider.is_empty();
         // SESSION is the big number; a provider with no session window (a weekly pool only) shows its first one there
-        let session_i = windows.iter().position(|w| w.label == "SESSION").or(if windows.is_empty() { None } else { Some(0) });
+        let session_i = head_i(&windows);
         self.session = session_i.map(|i| windows[i].clone());
-        // with more than one provider on, every window says whose it is, and the other providers' windows join the bars
+        // the lane sources: providers with an activity reading of their own (providers[i].activity; absent counts as null)
+        let srcs: Vec<(&str, Act, Vec<Win>, String)> = providers
+            .iter()
+            .filter_map(|p| {
+                let (name, act) = (p.get("name")?.as_str()?, act_of(p.get("activity"))?);
+                let status = p.get("status").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("NO DATA");
+                Some((name, Some(act), wins(p.get("windows")), status.to_string()))
+            })
+            .collect();
+        let laned = |name: &str| srcs.len() > 1 && srcs.iter().any(|(n, ..)| *n == name);
+        // with more than one provider on, every window says whose it is, and the other providers' windows join the bars,
+        // except a lane's headline window, drawn beside its trace
         let multi = self.multi;
         self.others = windows
             .iter()
@@ -519,7 +537,9 @@ impl App {
             .collect();
         for p in &providers {
             let Some(name) = p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && *n != provider.as_str()) else { continue };
-            self.others.extend(wins(p.get("windows")).iter().map(|w| qualify(name, w)));
+            let ws = wins(p.get("windows"));
+            let head = if laned(name) { head_i(&ws) } else { None };
+            self.others.extend(ws.iter().enumerate().filter(|(i, _)| Some(*i) != head).map(|(_, w)| qualify(name, w)));
         }
         self.alive = !windows.is_empty();
         self.session_pct = self.session.as_ref().map(|s| rnd(s.pct)).unwrap_or(0);
@@ -534,31 +554,44 @@ impl App {
         }
         let act = activity.or_else(|| self.d.get("activity").cloned());
         self.act = act_of(act.as_ref());
-        // one lane per provider with an activity reading of its own (providers[i].activity; absent counts as null),
-        // when more than one has one; a lane keeps its trace across payload refreshes
+        // one lane per source when more than one has a reading; a lane keeps its trace across payload refreshes
         let mut old = std::mem::take(&mut self.lanes);
-        let srcs: Vec<(&str, Act, Option<f64>)> = providers
-            .iter()
-            .filter_map(|p| {
-                let (name, act) = (p.get("name")?.as_str()?, act_of(p.get("activity"))?);
-                let w = wins(p.get("windows"));
-                Some((name, Some(act), w.iter().find(|w| w.label == "SESSION").or(w.first()).map(|w| w.pct)))
-            })
-            .collect();
         if srcs.len() > 1 {
             self.lanes = srcs
                 .into_iter()
-                .map(|(name, act, pct)| Lane {
-                    key: name.to_string(),
-                    name: name.to_ascii_uppercase(),
-                    active: name == provider,
-                    act: if name == provider { self.act } else { act },
-                    pct,
-                    ecg: old.iter().position(|l| l.key == name).map(|i| old.remove(i).ecg).unwrap_or_default(),
+                .map(|(name, act, ws, status)| {
+                    let (active, head) = (name == provider, head_i(&ws).map(|i| ws[i].clone()));
+                    Lane {
+                        key: name.to_string(),
+                        name: name.to_ascii_uppercase(),
+                        active,
+                        act: if active { self.act } else { act },
+                        pct: head.as_ref().map(|w| w.pct),
+                        head: if active { None } else { head.map(|w| qualify(name, &w)) },
+                        status,
+                        ecg: old.iter().position(|l| l.key == name).map(|i| old.remove(i).ecg).unwrap_or_default(),
+                    }
                 })
                 .collect();
         }
         true
+    }
+
+    /// A lane's headline: its window's label, the percentage, the reset (or why there is none). The active lane's
+    /// is the big number's, estimate and EST marker included; the others carry their own.
+    fn headline(&self, lane: &Lane, wide: bool) -> (String, String, String) {
+        if lane.active {
+            let big = if self.alive { format!("{}%", self.session_pct) } else { "--".to_string() };
+            let sub = match (&self.session, self.alive) {
+                (Some(s), true) => self.reset_text(s, wide),
+                _ => "NO SIGNAL".to_string(),
+            };
+            (self.session_label(), big, sub)
+        } else if let Some(w) = &lane.head {
+            (w.label.clone(), format!("{}%", rnd(w.pct)), self.reset_text(w, wide))
+        } else {
+            (format!("{} SESSION", lane.name), "--".to_string(), lane.status.clone())
+        }
     }
 
     /// The caption over the big number: SESSION, or whose window it is when more than one provider is on.
@@ -681,7 +714,8 @@ struct Layout {
     big: String,
     reset: String,
     caption: String,
-    lanes: Vec<(u16, u16, u16)>, // per lane: its label row, the first trace row, the trace rows; empty for the single trace
+    lanes: Vec<(u16, u16, u16)>,          // per lane: its label row, the first trace row, the trace rows; empty for the single trace
+    heads: Vec<(String, String, String)>, // per lane: its headline's label, percentage and reset
     right_w: u16,
     trace_x: u16,
     trace_w: u16,
@@ -712,8 +746,11 @@ fn layout(app: &mut App, w: u16, h: u16) -> Layout {
     };
     let dw = big.chars().count() as i32 * 4 - 1;
     let caption = app.session_label();
+    // with lanes, one headline each in the right column, as wide as the longest of their lines;
     // 15 = "100%": the split does not jump between two- and three-digit readings
-    let right_w = dw.max(reset.chars().count() as i32).max(caption.chars().count() as i32).max(7).max(if wide { 15 } else { 0 });
+    let heads: Vec<(String, String, String)> = app.lanes.iter().map(|l| app.headline(l, wide)).collect();
+    let longest = heads.iter().flat_map(|(a, b, c)| [a, b, c]).map(|s| s.chars().count() as i32).max();
+    let right_w = longest.unwrap_or_else(|| dw.max(reset.chars().count() as i32).max(caption.chars().count() as i32)).max(7).max(if wide { 15 } else { 0 });
     let trace_w = (wi - 2 * m - right_w - 2).max(2);
     let base = 1 + 7 + 1 + 1; // header, trace block (label + 5 + bar), sparkline, footer
     let n_win = (app.others.len() as i32).min(4).min(hi - base).max(0);
@@ -778,6 +815,7 @@ fn layout(app: &mut App, w: u16, h: u16) -> Layout {
         reset,
         caption,
         lanes,
+        heads,
         right_w: right_w as u16,
         trace_x: m as u16,
         trace_w: trace_w as u16,
@@ -879,7 +917,8 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         l.trace(f, area, &app.ecg, (l.body_y, l.body_h), col, app.truecolor);
     }
     // one lane per provider: the dot, its name, its own rate, and its trace, coloured by its own session window
-    for (lane, &(ly, by, bh)) in app.lanes.iter().zip(&l.lanes) {
+    let right_x = w - m - l.right_w;
+    for ((lane, &(ly, by, bh)), (label, pct, sub)) in app.lanes.iter().zip(&l.lanes).zip(&l.heads) {
         let live = if busy_of(lane.act) { app.color(p.ok) } else { app.color(p.dim) };
         let dot = Style::new().fg(live).add_modifier(if lane.ecg.beat > 0.3 { Modifier::BOLD } else { Modifier::DIM });
         let mut spans = vec![Span::styled("● ", dot), Span::styled(lane.name.clone(), bold(app.color(p.text)))];
@@ -895,6 +934,14 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         f.render_widget(Paragraph::new(Line::from(spans)), rect(l.trace_x, ly, l.trace_w, 1, area));
         let color = if lane.active { col } else { lane.pct.map(|v| app.tone(&p, v)).unwrap_or(app.color(p.dim)) };
         l.trace(f, area, &lane.ecg, (by, bh), color, app.truecolor);
+        // its headline in the right column, level with the lane: the label on the name row, the percentage on the
+        // first trace row (a lane always has one), the reset on the second when the lane has it
+        let dead = if lane.active { !app.alive } else { lane.head.is_none() };
+        text!(ly, right_x, l.right_w, Line::styled(label.clone(), dim), Alignment::Right);
+        text!(by, right_x, l.right_w, Line::styled(pct.clone(), bold(color)), Alignment::Right);
+        if bh >= 2 {
+            text!(by + 1, right_x, l.right_w, Line::styled(sub.clone(), if dead { bold(app.color(p.bad)) } else { dim }), Alignment::Right);
+        }
     }
     if !app.alive {
         let flat = l.body_y + ((l.body_h as f64 * 4.0 * 0.62) as u16) / 4; // the row the flat line runs through
@@ -906,19 +953,20 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         let hint_w = if hint.chars().count() <= l.trace_w as usize { l.trace_w } else { w - 2 * m }; // the digits' rows there are blank
         text!(flat + 1, l.trace_x, hint_w, Line::styled(hint, dim), Alignment::Center);
     }
-    // the session: label, big digits, reset, bar
-    let right_x = w - m - l.right_w;
-    text!(l.label_y, right_x, l.right_w, Line::styled(l.caption.clone(), dim), Alignment::Right);
-    let top = l.body_y + (l.body_h - if l.reset_in_body { 6 } else { 5 }) / 2; // digits (and their reset line) centred in the body
-    for r in 0..5 {
-        let row = l.big.chars().map(|c| glyph(c)[r].replace('#', "█")).collect::<Vec<_>>().join(" ");
-        text!(top + r as u16, right_x, l.right_w, Line::styled(row, bold(col)), Alignment::Right);
+    // the session: label, big digits, reset (with lanes, each lane's headline says these), then the bar
+    if l.lanes.is_empty() {
+        text!(l.label_y, right_x, l.right_w, Line::styled(l.caption.clone(), dim), Alignment::Right);
+        let top = l.body_y + (l.body_h - if l.reset_in_body { 6 } else { 5 }) / 2; // digits (and their reset line) centred in the body
+        for r in 0..5 {
+            let row = l.big.chars().map(|c| glyph(c)[r].replace('#', "█")).collect::<Vec<_>>().join(" ");
+            text!(top + r as u16, right_x, l.right_w, Line::styled(row, bold(col)), Alignment::Right);
+        }
+        if app.alive {
+            let ry = if l.reset_in_body { top + 5 } else { l.bar_y };
+            text!(ry, right_x, l.right_w, Line::styled(l.reset.clone(), dim), Alignment::Right);
+        }
     }
-    if app.alive {
-        let ry = if l.reset_in_body { top + 5 } else { l.bar_y };
-        text!(ry, right_x, l.right_w, Line::styled(l.reset.clone(), dim), Alignment::Right);
-    }
-    let bw = if l.reset_in_body || !app.alive { w - 2 * m } else { l.trace_w } as usize;
+    let bw = if l.reset_in_body || !app.alive || !l.lanes.is_empty() { w - 2 * m } else { l.trace_w } as usize;
     let filled = if app.alive { ((app.session_pct as usize * bw + 50) / 100).min(bw) } else { 0 };
     let bar = Line::from(vec![Span::styled("█".repeat(filled), Style::new().fg(col)), Span::styled("░".repeat(bw - filled), dim)]);
     text!(l.bar_y, m, bw as u16, bar, Alignment::Left);
@@ -1517,6 +1565,18 @@ mod tests {
         a.others.iter().map(|w| w.label.clone()).collect()
     }
 
+    /// The labels of the bars on screen: the label column of each window row.
+    fn bars(rows: &[String], l: &Layout) -> Vec<String> {
+        (0..l.n_win)
+            .map(|i| rows[(l.win_y + i as u16) as usize].chars().skip(l.m as usize).take(l.label_w as usize).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// Row `y` without its trailing blanks: what the right column ends with.
+    fn right(rows: &[String], y: u16) -> String {
+        rows[y as usize].trim_end().to_string()
+    }
+
     fn braille(row: &str) -> bool {
         row.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))
     }
@@ -1526,7 +1586,8 @@ mod tests {
         let grok = json!({"tok_per_min": 610, "idle_s": 0, "sessions": 1});
         let a = app(several(true, grok.clone()), None, None);
         assert!(a.multi);
-        assert_eq!(labels(&a), ["CLAUDE 7D", "FABLE", "CODEX SESSION", "GPT-5", "GROK 7D"]);
+        // codex and grok have lanes: their headline windows (CODEX SESSION, GROK 7D) are drawn beside their traces, not as bars
+        assert_eq!(labels(&a), ["CLAUDE 7D", "FABLE", "GPT-5"]);
         assert_eq!(a.session_label(), "CLAUDE SESSION");
         assert_eq!(a.session.as_ref().unwrap().label, "SESSION", "the window itself keeps its name: the EST marker still finds it");
         assert_eq!(a.reset_text(a.session.as_ref().unwrap(), true), "RESET 2H 14M · EST");
@@ -1549,7 +1610,7 @@ mod tests {
         let a = app(p, None, None);
         assert!(!a.multi);
         assert_eq!((a.session_label().as_str(), labels(&a)), ("SESSION", vec!["WEEK".to_string(), "FABLE".to_string()]));
-        // drawn: the caption at the right of the label row, the names in the bars, at every size
+        // drawn: the caption at the right of the label row, the names in the bars, at every size; grok's lane keeps GROK 7D out of the bars
         let mut a = app(several(false, grok), None, None);
         for (w, h) in [(90u16, 28u16), (60, 18), (40, 12)] {
             let l = layout(&mut a, w, h);
@@ -1557,7 +1618,8 @@ mod tests {
             assert!(rows[l.label_y as usize].trim_end().ends_with("CLAUDE SESSION"), "{w}x{h}: {}", rows[l.label_y as usize]);
             let text = rows.join("\n");
             assert!(text.contains("CLAUDE 7D ") && text.contains(" 17%  ") && text.contains("FABLE"), "{w}x{h}: {text}");
-            assert_eq!(text.contains("GROK 7D ") && text.contains(" 38%  "), l.n_win >= 3, "{w}x{h}: {text}");
+            assert_eq!(bars(&rows, &l), ["CLAUDE 7D", "FABLE"], "{w}x{h}: {text}");
+            assert!(text.contains("GROK 7D") && text.contains("38%"), "{w}x{h}: {text}");
         }
         // narrow: the right column widens to the caption, the label column to the longest name
         let l = layout(&mut a, 40, 12);
@@ -1572,8 +1634,18 @@ mod tests {
         assert_eq!((a.lanes[0].act, a.lanes[1].act), (a.act, Some((610.0, 0.0, 1))), "the active provider's lane follows the feed");
         assert!((a.lanes[1].bpm(true) - (60.0 + 60.0 * 7.1f64.log10())).abs() < 1e-9);
         assert_eq!((a.lanes[0].bpm(true), a.lanes[0].bpm(false), a.lanes[1].bpm(false)), (a.bpm(), 0.0, a.lanes[1].bpm(true)));
-        // the label row and the body split into two lanes at every size; both names and rates on screen, a trace in each
-        for (w, h, want) in [(90u16, 28u16, [(2u16, 3u16, 5u16), (8, 9, 5)]), (60, 18, [(2, 3, 2), (5, 6, 2)]), (40, 12, [(1, 2, 2), (4, 5, 2)])] {
+        // the headline of each lane: the active lane's is the big number's (estimate, EST marker), grok's its weekly pool
+        assert_eq!(a.headline(&a.lanes[0], true), ("CLAUDE SESSION".to_string(), "16%".to_string(), "RESET 2H 14M · EST".to_string()));
+        assert_eq!(a.headline(&a.lanes[1], true), ("GROK 7D".to_string(), "38%".to_string(), "RESET 3D 00H".to_string()));
+        assert_eq!(a.headline(&a.lanes[1], false), ("GROK 7D".to_string(), "38%".to_string(), "3D 00H".to_string()));
+        assert_eq!(labels(&a), ["CLAUDE 7D", "FABLE"], "GROK 7D is a headline, not a bar");
+        // the label row and the body split into two lanes at every size (at 90x28 a row taller than with three bars: GROK 7D
+        // left them); both names and rates on screen, a trace in each, and each lane's headline level with it on the right
+        for (w, h, want, reset) in [
+            (90u16, 28u16, [(2u16, 3u16, 6u16), (9, 10, 5)], ["RESET 2H 14M · EST", "RESET 3D 00H"]),
+            (60, 18, [(2, 3, 2), (5, 6, 2)], ["RESET 2H 14M · EST", "RESET 3D 00H"]),
+            (40, 12, [(1, 2, 2), (4, 5, 2)], ["2H 14M·EST", "3D 00H"]),
+        ] {
             let l = layout(&mut a, w, h);
             assert_eq!(l.lanes, want, "{w}x{h}");
             assert_eq!((l.lanes[0].0, l.lanes[1].1 + l.lanes[1].2), (l.label_y, l.body_y + l.body_h), "{w}x{h}: the lanes fill the block");
@@ -1586,7 +1658,34 @@ mod tests {
             for &(_, by, bh) in &l.lanes {
                 assert!((by..by + bh).any(|y| braille(&rows[y as usize])), "{w}x{h}: no trace in rows {by}..{}", by + bh);
             }
+            // each headline: the label on the name row, the percentage on the first trace row, the reset on the second
+            let text = rows.join("\n");
+            for (i, (label, pct)) in [("CLAUDE SESSION", "16%"), ("GROK 7D", "38%")].iter().enumerate() {
+                let (ly, by, _) = want[i];
+                assert!(right(&rows, ly).ends_with(label) && right(&rows, by).ends_with(pct) && right(&rows, by + 1).ends_with(reset[i]), "{w}x{h}:\n{text}");
+            }
+            // the headline windows are not bars too, and the bar under the block spans the width with no reset beside it
+            assert_eq!(bars(&rows, &l), ["CLAUDE 7D", "FABLE"], "{w}x{h}:\n{text}");
+            let bar = &rows[l.bar_y as usize];
+            assert!(bar.chars().skip(m).take(w as usize - 2 * m).all(|c| c == '█' || c == '░') && bar.contains('█'), "{w}x{h}: {bar}");
         }
+        // the active provider without a reading: its lane's headline says NO SIGNAL, the other's stands, the bar is empty
+        let mut p = several(false, grok.clone());
+        p["windows"] = json!([]);
+        p["status"] = json!("NO LOGIN");
+        let mut dead = app(p, None, None);
+        assert_eq!(dead.headline(&dead.lanes[0], true), ("CLAUDE SESSION".to_string(), "--".to_string(), "NO SIGNAL".to_string()));
+        let l = layout(&mut dead, 90, 28);
+        assert_eq!((l.n_win, l.lanes.len()), (0, 2));
+        let rows = draw(&mut dead, 90, 28, 1000.0);
+        let (ly, by, _) = l.lanes[0];
+        assert!(
+            right(&rows, ly).ends_with("CLAUDE SESSION") && right(&rows, by).ends_with("--") && right(&rows, by + 1).ends_with("NO SIGNAL"),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(right(&rows, l.lanes[1].0).ends_with("GROK 7D") && right(&rows, l.lanes[1].1).ends_with("38%"), "{}", rows.join("\n"));
+        assert!(rows[l.bar_y as usize].contains('░') && !rows[l.bar_y as usize].contains('█'), "{}", rows[l.bar_y as usize]);
         // the traces keep running across a payload refresh: the same lanes come back with their columns
         for _ in 0..3 {
             draw(&mut a, 90, 28, 1001.0);
@@ -1615,15 +1714,24 @@ mod tests {
         assert_eq!(a.lanes.iter().map(|l| (l.name.as_str(), l.pct)).collect::<Vec<_>>(), [("CLAUDE", Some(13.0)), ("CODEX", Some(64.0)), ("GROK", None)]);
         assert_eq!((a.lanes[1].bpm(true), busy_of(a.lanes[1].act), label_of(a.lanes[1].act).as_deref()), (0.0, false, Some("IDLE 12M")));
         let l = layout(&mut a, 90, 28);
-        assert_eq!((l.lanes.to_vec(), l.body_h), (vec![(2, 3, 3), (6, 7, 3), (10, 11, 2)], 10));
-        let text = draw(&mut a, 90, 28, 1001.0).join("\n");
+        assert_eq!((l.lanes.to_vec(), l.body_h), (vec![(2, 3, 3), (6, 7, 3), (10, 11, 3)], 11));
+        let rows = draw(&mut a, 90, 28, 1001.0);
+        let text = rows.join("\n");
         assert!(text.contains("● CLAUDE  3.4K TOK/MIN · 2 SESSIONS") && text.contains("● CODEX  IDLE 12M") && text.contains("● GROK  610 TOK/MIN"), "{text}");
-        // 30x10: six rows, two per lane; the rates no longer fit, the names do
+        // three headlines: codex's session (out of the bars), and grok's says why it has no window
+        assert!(right(&rows, 6).ends_with("CODEX SESSION") && right(&rows, 7).ends_with("64%") && right(&rows, 8).contains("RESET 1H "), "{text}");
+        assert!(right(&rows, 10).ends_with("GROK SESSION") && right(&rows, 11).ends_with("--") && right(&rows, 12).ends_with("NO DATA"), "{text}");
+        assert_eq!(bars(&rows, &l), ["CLAUDE 7D", "FABLE", "GPT-5"], "{text}");
+        // 30x10: six rows, two per lane; the rates no longer fit, the names do; the headlines drop their reset line
         let l = layout(&mut a, 30, 10);
         assert_eq!((l.lanes.to_vec(), l.trace_w), (vec![(1, 2, 1), (3, 4, 1), (5, 6, 1)], 12));
         let rows = draw(&mut a, 30, 10, 1001.0);
-        assert!(rows[1].starts_with(" ● CLAUDE  ") && rows[3].starts_with(" ● CODEX  ") && rows[5].starts_with(" ● GROK  "), "{}", rows.join("\n"));
-        assert!(!rows.join("\n").contains("TOK") && rows[1].trim_end().ends_with("CLAUDE SESSION"), "{}", rows.join("\n"));
+        let text = rows.join("\n");
+        assert!(rows[1].starts_with(" ● CLAUDE  ") && rows[3].starts_with(" ● CODEX  ") && rows[5].starts_with(" ● GROK  "), "{text}");
+        assert!(!text.contains("TOK") && rows[1].trim_end().ends_with("CLAUDE SESSION"), "{text}");
+        assert!(right(&rows, 2).ends_with("16%") && right(&rows, 3).ends_with("CODEX SESSION") && right(&rows, 4).ends_with("64%"), "{text}");
+        assert!(right(&rows, 5).ends_with("GROK SESSION") && right(&rows, 6).ends_with("--"), "{text}");
+        assert!(!text.contains("2H 14M") && !text.contains("1H 30M") && !text.contains("NO DATA"), "the reset lines went first: {text}");
         // a fourth lane needs an eighth row: on six it waits for a taller terminal
         p["providers"]
             .as_array_mut()
@@ -1634,7 +1742,9 @@ mod tests {
         assert_eq!(layout(&mut a, 30, 10).lanes.len(), 3);
         let text = draw(&mut a, 30, 10, 1001.0).join("\n");
         assert!(text.contains("● GROK") && !text.contains("GEMINI"), "{text}");
-        assert_eq!(layout(&mut a, 90, 28).lanes, [(2, 3, 2), (5, 6, 2), (8, 9, 2), (11, 12, 1)]);
+        assert_eq!(layout(&mut a, 90, 28).lanes, [(2, 3, 2), (5, 6, 2), (8, 9, 2), (11, 12, 2)]);
+        let text = draw(&mut a, 90, 28, 1001.0).join("\n");
+        assert!(text.contains("GEMINI SESSION") && text.contains("NO DATA"), "a fourth lane with no windows says why: {text}");
     }
 
     #[test]

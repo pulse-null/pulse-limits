@@ -83,25 +83,31 @@
   // one trace per provider with an activity reading of its own (providers[i].activity; absent counts as null), when
   // more than one has one: the active provider's lane follows `act`, the others the payload. Else the single trace, as ever.
   let lanes = [];
+  // a provider's headline window: SESSION, or its first one when it has none (a weekly pool only)
+  const headOf = ws => ws.find(w => w.label === 'SESSION') || ws[0] || null;
   function derive() {
     // SESSION is the big number; a provider with no session window (a weekly pool only) shows its first one there
-    session = D.windows.find(w => w.label === 'SESSION') || D.windows[0] || null;
+    session = headOf(D.windows);
     others = D.windows.filter(w => w !== session);
     if (multi() && D.provider) others = others.map(w => qualify(D.provider.toUpperCase(), w));
-    // the other providers' windows join the rings; one with no data is a dead ring that says why
-    for (const p of D.providers || []) {
-      if (!p.name || p.name === D.provider) continue;
-      const name = p.name.toUpperCase();
-      if (p.windows && p.windows.length) others = others.concat(p.windows.map(w => qualify(name, w)));
-      else others.push({ label: name, pct: 0, resets: null, status: p.status || 'NO DATA' });
-    }
     sessionPct = session ? Math.round(session.pct) : 0;
     alive = D.windows.length > 0;
     const srcs = (D.providers || []).filter(p => p.name && actOf(p.activity));
     lanes = srcs.length > 1 ? srcs.map(p => {
-      const s = (p.windows || []).find(w => w.label === 'SESSION') || (p.windows || [])[0], active = p.name === D.provider;
-      return { key: p.name, name: p.name.toUpperCase(), active, act: active ? act : actOf(p.activity), pct: s ? Math.round(s.pct) : null, ecg: null };
+      const name = p.name.toUpperCase(), s = headOf(p.windows || []), active = p.name === D.provider;
+      // each lane carries a headline beside its trace: the active lane the big number's window, the others their own
+      return { key: p.name, name, active, act: active ? act : actOf(p.activity), pct: s ? Math.round(s.pct) : null, ecg: null,
+               win: active || !s ? null : qualify(name, s), status: p.status || 'NO DATA' };
     }) : [];
+    const laned = new Set(lanes.map(l => l.key));
+    // the other providers' windows join the rings, except a lane's headline, which is drawn beside its trace;
+    // one with no data is a dead ring that says why (a lane says so in its headline instead)
+    for (const p of D.providers || []) {
+      if (!p.name || p.name === D.provider) continue;
+      const name = p.name.toUpperCase(), ws = p.windows || [], hd = laned.has(p.name) ? headOf(ws) : null;
+      if (ws.length) others = others.concat(ws.filter(w => w !== hd).map(w => qualify(name, w)));
+      else if (!laned.has(p.name)) others.push({ label: name, pct: 0, resets: null, status: p.status || 'NO DATA' });
+    }
   }
   function applyUsage(p) { if (!p || typeof p !== 'object') return; Object.assign(D, p); derive(); }
   applyUsage(load());
@@ -143,6 +149,13 @@
   const resetMs = w => { const r = w && w.resets ? Date.parse(w.resets) : NaN; return isNaN(r) ? NaN : r - Date.now(); };
   const resetText = w => { if (w && w.status) return w.status; const m = resetMs(w); return (isNaN(m) ? 'RESET ?' : 'RESET ' + span(m)) + (w === session && estimating() ? ' · EST' : ''); };
   const pctText = w => w.status ? '?' : Math.round(w.pct) + '%';
+  // what a lane's headline says: the label, the percentage (null with no reading), its window for the reset, and,
+  // with no reading, why: the active lane's is the big number's (estimate and EST marker included), the others' their own
+  function headline(l) {
+    const w = l.active ? session : l.win, pct = l.active ? (alive ? sessionPct : null) : w ? Math.round(w.pct) : null;
+    const status = l.active ? (alive ? '' : 'NO SIGNAL') : w ? '' : l.status;
+    return { label: l.active ? sessionLabel() : w ? w.label : l.name + ' SESSION', pct, text: pct === null ? '--' : pct + '%', win: w, sub: status || resetText(w), dead: !!status };
+  }
   // the plan badge names the provider when more than one is on the monitor
   const planBadge = () => (D.providers || []).length > 1 && D.provider ? D.provider.toUpperCase() + (D.plan ? ' · ' + D.plan : '') : D.plan;
   const ageSec = () => Math.max(0, Math.floor(Date.now() / 1000 - D.fetched));
@@ -319,13 +332,19 @@
     ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.strokeRect(BX + .5, BY + .5, BW - 1, BH - 1);
     ctx.fillStyle = C.grid;
     for (let x = TX + 6; x < TX + ECG.W; x += 20) for (let y = BY + 16; y < BY + BH - 14; y += 20) ctx.fillRect(x, y, 1, 1);
-    if (lanes.length) for (const { l, top, ecg, base, amp } of laneRows(BY + 6, BY + BH - 14, 12)) {
+    const nx = BX + BW - 8;
+    if (lanes.length) for (const { l, top, h, ecg, base, amp } of laneRows(BY + 6, BY + BH - 14, 12)) {
       const on = busyOf(l.act), lab = labelOf(l.act);
       ecg.draw(TX, base, amp, { color: l.active ? col : l.pct === null ? C.dim : tone(l.pct), width: 2, fade: true });
       ctx.globalAlpha = .25 + .75 * ecg.beat; ctx.fillStyle = on ? C.green : C.dim;
       ctx.beginPath(); ctx.arc(TX + 9, top + 5, 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
       const nw = px(l.name, TX + 18, top + 2, 1, C.text);
       if (lab !== null) px(lab, TX + 18 + nw + 8, top + 2, 1, on ? C.green : C.dim);
+      // its headline, level with the lane: the label on the name row, the percentage at pixel size 3 (2 with three lanes), the reset when it fits
+      const hd = headline(l), s = lanes.length > 2 ? 2 : 3, py = top + 9 + s, sy = py + 8 * s;
+      px(hd.label, nx - tw(hd.label, 1), top + 2, 1, C.dim);
+      px(hd.text, nx - tw(hd.text, s), py, s, l.active ? col : hd.pct === null ? C.dim : tone(hd.pct));
+      if (sy + 7 <= top + h) px(hd.sub, nx - tw(hd.sub, 1), sy, 1, hd.dead ? C.red : C.dim);
     } else {
       ECG.draw(TX, BASE, 44, { color: col, width: 2, fade: true });
       const lab = activityLabel();
@@ -334,13 +353,13 @@
         ctx.beginPath(); ctx.arc(TX + 9, BY + 13, 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
         px(lab, TX + 18, BY + 10, 1, busy() ? C.green : C.dim);
       }
+      const cap = sessionLabel();
+      px(cap, nx - tw(cap, 1), BY + 12, 1, C.dim);
+      const big = alive ? sessionPct + '%' : '--';
+      px(big, nx - tw(big, 5), BY + 26, 5, col);
+      const sub = alive ? resetText(session) : 'NO SIGNAL';
+      px(sub, nx - tw(sub, 1), BY + 70, 1, alive ? C.dim : C.red);
     }
-    const nx = BX + BW - 8, cap = sessionLabel();
-    px(cap, nx - tw(cap, 1), BY + 12, 1, C.dim);
-    const big = alive ? sessionPct + '%' : '--';
-    px(big, nx - tw(big, 5), BY + 26, 5, col);
-    const sub = alive ? resetText(session) : 'NO SIGNAL';
-    px(sub, nx - tw(sub, 1), BY + 70, 1, alive ? C.dim : C.red);
     const bx = BX + 6, by = BY + BH - 10, bw = BW - 12;
     ctx.fillStyle = C.track; ctx.fillRect(bx, by, bw, 3);
     if (alive) { ctx.fillStyle = col; ctx.fillRect(bx, by, Math.round(bw * sessionPct / 100), 3); }
@@ -390,7 +409,9 @@
     ctx.fillStyle = P.card; rr(x, y, w, h, 12); ctx.fill();
     const nice = s => s.charAt(0) + s.slice(1).toLowerCase();
     if (lanes.length) {
-      const lf = (lanes.length > 2 ? '10px ' : '11px ') + SF, lh = lanes.length > 2 ? 13 : 14;
+      const three = lanes.length > 2, lf = (three ? '10px ' : '11px ') + SF, lh = three ? 13 : 14;
+      // the headline fonts and the baselines of the percentage and the reset under the label row: 24 px over two lanes, 15 over three
+      const [hf, pf, sf, py, sy] = three ? ['500 10px ', '700 15px ', '400 9px ', 11, 20] : ['500 11px ', '700 24px ', '400 10px ', 20, 30];
       for (const { l, top, ecg, base, amp } of laneRows(y + 8, y + h - 20, lh)) {
         const on = busyOf(l.act), lab = labelOf(l.act);
         ecg.draw(x + 14, base, amp, { color: l.active ? col : l.pct === null ? P.sub : tone(l.pct), width: 2, fade: false, gap: 18, dotGlow: 6 });
@@ -398,11 +419,17 @@
         ctx.beginPath(); ctx.arc(x + 20, top + lh - 5, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
         const nw = txt(nice(l.name), x + 30, top + lh - 1, '600 ' + lf, P.text);
         if (lab !== null) txt(lab.toLowerCase().replace(/^idle/, 'Idle'), x + 30 + nw + 8, top + lh - 1, '500 ' + lf, on ? P.green : P.sub);
+        const hd = headline(l);   // its headline, level with the lane: label on the name row, the percentage, the reset
+        txt(nice(hd.label), x + w - 16, top + lh - 1, hf + SF, P.sub, 'right');
+        txt(hd.pct === null ? '—' : hd.text, x + w - 16, top + lh + py, pf + SF, l.active ? col : hd.pct === null ? P.sub : tone(hd.pct), 'right');
+        txt(hd.dead ? nice(hd.sub) : 'Resets in ' + span(resetMs(hd.win)).toLowerCase(), x + w - 16, top + lh + sy, sf + SF, hd.dead ? P.red : P.sub, 'right');
       }
-    } else ECG.draw(x + 14, y + 62, 38, { color: col, width: 2, fade: false, gap: 18, dotGlow: 6 });
-    txt(nice(sessionLabel()), x + w - 16, y + 24, '500 12px ' + SF, P.sub, 'right');
-    txt(alive ? sessionPct + '%' : '—', x + w - 16, y + 68, '700 42px ' + SF, col, 'right');
-    txt(alive ? 'Resets in ' + span(resetMs(session)).toLowerCase() : 'No signal', x + w - 16, y + 88, '400 11px ' + SF, alive ? P.sub : P.red, 'right');
+    } else {
+      ECG.draw(x + 14, y + 62, 38, { color: col, width: 2, fade: false, gap: 18, dotGlow: 6 });
+      txt(nice(sessionLabel()), x + w - 16, y + 24, '500 12px ' + SF, P.sub, 'right');
+      txt(alive ? sessionPct + '%' : '—', x + w - 16, y + 68, '700 42px ' + SF, col, 'right');
+      txt(alive ? 'Resets in ' + span(resetMs(session)).toLowerCase() : 'No signal', x + w - 16, y + 88, '400 11px ' + SF, alive ? P.sub : P.red, 'right');
+    }
     const lab = lanes.length ? null : activityLabel();
     if (lab !== null) {
       ctx.globalAlpha = .3 + .7 * ECG.beat; ctx.fillStyle = busy() ? P.green : P.sub;
@@ -454,28 +481,37 @@
     ctx.moveTo(x + w - 30, y - 3); ctx.lineTo(x + w + 3, y - 3); ctx.lineTo(x + w + 3, y + 30);
     ctx.moveTo(x + 30, y + h + 3); ctx.lineTo(x - 3, y + h + 3); ctx.lineTo(x - 3, y + h - 30); ctx.stroke();
     const cursor = (hx, y0, y1) => { ctx.strokeStyle = 'rgba(0,240,255,.25)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(hx + .5, y0); ctx.lineTo(hx + .5, y1); ctx.stroke(); };
+    // the percentage in white with the HUD's colour fringes, `off` px to each side
+    const nx = x + w - 14, glitch = (s, gx, gy, font, off) => {
+      ctx.globalCompositeOperation = 'lighter';
+      txt(s, gx - off, gy, font, 'rgba(255,43,214,.9)', 'right'); txt(s, gx + off, gy, font, 'rgba(0,240,255,.9)', 'right');
+      ctx.globalCompositeOperation = 'source-over';
+      txt(s, gx, gy, font, '#ffffff', 'right');
+    };
     if (lanes.length) {
-      const lf = (lanes.length > 2 ? '10px ' : '11px ') + F, lh = 14;
+      const three = lanes.length > 2, lf = (three ? '10px ' : '11px ') + F, lh = 14;
+      // the headline fonts (label, percentage, reset) and the baselines of the last two under the label row: 26 px over two lanes, 16 over three
+      const [hf, hs, pf, sf, ss, py, sy] = three ? ['600 10px ', 2, '800 16px ', '600 9px ', 1, 11, 19] : ['600 11px ', 3, '800 26px ', '600 10px ', 2, 20, 30];
       for (const { l, top, h: lhh, ecg, base, amp } of laneRows(y + 6, y + h - 18, lh)) {
         const on = busyOf(l.act), lab = labelOf(l.act);
         ecg.draw(x + 8, base, amp, { color: l.active ? col : l.pct === null ? P.dim : tone(l.pct), width: 2, fade: false, glow: 14, dotGlow: 16 });
         cursor(x + 8 + ecg.head, top + lh, top + lhh - 2);
         const nw = txt((on ? '▮ ' : '▯ ') + l.name, x + 12, top + lh - 2, '600 ' + lf, P.text, 'left', 1.5);
         if (lab !== null) txt(lab, x + 12 + nw + 10, top + lh - 2, '600 ' + lf, on ? P.cy : P.dim, 'left', 1.5);
+        const hd = headline(l);   // its headline, level with the lane: label on the name row, the percentage, the reset in its window's tone
+        txt(hd.label, nx, top + lh - 2, hf + F, P.dim, 'right', hs);
+        glitch(hd.text, nx, top + lh + py, pf + F, 1);
+        txt(hd.sub, nx, top + lh + sy, sf + F, hd.dead ? P.red : l.active ? col : tone(hd.pct), 'right', ss);
       }
     } else {
       ECG.draw(x + 8, y + 62, 40, { color: col, width: 2, fade: false, glow: 14, dotGlow: 16 });
       cursor(x + 8 + ECG.head, y + 8, y + h - 20);
       const lab = activityLabel();
       if (lab !== null) txt((busy() ? '▮ ' : '▯ ') + lab, x + 12, y + 20, '600 11px ' + F, busy() ? P.cy : P.dim, 'left', 1.5);
+      txt(sessionLabel(), nx, y + 22, '600 11px ' + F, P.dim, 'right', 3);
+      glitch(alive ? sessionPct + '%' : '--', nx, y + 72, '800 48px ' + F, 2);
+      txt(alive ? resetText(session) : 'NO SIGNAL', nx, y + 92, '600 11px ' + F, alive ? P.yl : P.red, 'right', 2);
     }
-    txt(sessionLabel(), x + w - 14, y + 22, '600 11px ' + F, P.dim, 'right', 3);
-    const big = alive ? sessionPct + '%' : '--', bf = '800 48px ' + F, nx = x + w - 14, ny = y + 72;
-    ctx.globalCompositeOperation = 'lighter';
-    txt(big, nx - 2, ny, bf, 'rgba(255,43,214,.9)', 'right'); txt(big, nx + 2, ny, bf, 'rgba(0,240,255,.9)', 'right');
-    ctx.globalCompositeOperation = 'source-over';
-    txt(big, nx, ny, bf, '#ffffff', 'right');
-    txt(alive ? resetText(session) : 'NO SIGNAL', nx, y + 92, '600 11px ' + F, alive ? P.yl : P.red, 'right', 2);
     const segs = 46, sw = (w - 24) / segs;
     for (let i = 0; i < segs; i++) { const on = alive && i < Math.round(segs * sessionPct / 100); ctx.fillStyle = on ? col : P.grid; if (on) { ctx.shadowColor = col; ctx.shadowBlur = 6; } ctx.fillRect(x + 12 + i * sw, y + h - 12, sw - 2, 4); ctx.shadowBlur = 0; }
 
@@ -529,33 +565,40 @@
     const [st, kind] = statusInfo(t);
     txt(st, W - 16, 38, '600 11px ' + F, { ok: P.cyan, stale: '#ffb347', dead: '#ff4d4d', old: P.lav }[kind], 'right', 1);
     const col = !alive ? P.lav : D.status ? '#ffb347' : tone(sessionPct);
-    if (lanes.length) {
-      const lf = (lanes.length > 2 ? '10px ' : '11px ') + F, lh = 14;
-      for (const { l, top, ecg, base, amp } of laneRows(44, 140, lh)) {
-        const on = busyOf(l.act), lab = labelOf(l.act);
-        ecg.draw(16, base, amp, { color: l.active ? col : l.pct === null ? P.lav : tone(l.pct), width: 2.5, fade: false, glow: 12, dotGlow: 14 });
-        const nw = txt(l.name, 16, top + lh - 2, '600 ' + lf, P.white, 'left', 1.5);
-        if (lab !== null) txt(lab, 16 + nw + 10, top + lh - 2, '600 ' + lf, on ? P.cyan : P.lav, 'left', 1.5);
-      }
-    } else {
-      ECG.draw(16, 108, 42, { color: col, width: 2.5, fade: false, glow: 12, dotGlow: 14 });
-      const lab = activityLabel();
-      if (lab !== null) txt(lab, 16, 54, '600 11px ' + F, busy() ? P.cyan : P.lav, 'left', 1.5);
-    }
-
     // readouts sit on dark glass panels so the grid never runs through the numbers;
     // a second provider brings the rings to four, narrower, and the session panel gives way
     const panel = (x, y, w, h) => { ctx.fillStyle = 'rgba(8,2,20,.82)'; rr(x, y, w, h, 10); ctx.fill(); ctx.strokeStyle = 'rgba(34,230,255,.35)'; ctx.lineWidth = 1; ctx.stroke(); };
     const shown = others.slice(0, 4), wide = shown.length <= 3, per = wide ? 78 : 60;
-    panel(12, 192, wide ? 270 : 212, 96);
-    const big = alive ? sessionPct + '%' : '--', bf = 'italic 900 52px ' + F;
-    const cg = ctx.createLinearGradient(0, 200, 0, 246); cg.addColorStop(0, '#ffffff'); cg.addColorStop(.55, '#ffffff'); cg.addColorStop(.56, '#ff9ad4'); cg.addColorStop(1, P.pink);
-    ctx.shadowColor = P.pink; ctx.shadowBlur = 14; txt(big, 24, 250, bf, cg); ctx.shadowBlur = 0;
-    if (alive && multi()) {   // the qualified name and the reset no longer share a line: two, a size down
-      txt(sessionLabel(), 26, 264, '600 10px ' + F, P.white, 'left', wide ? 2 : 1);
-      txt(resetText(session), 26, 277, '600 10px ' + F, P.white, 'left', wide ? 2 : 1);
-    } else txt(alive ? 'SESSION · ' + resetText(session) : 'NO SIGNAL', 26, 270, '600 11px ' + F, alive ? P.white : '#ff4d4d', 'left', wide ? 2 : 1);
-    if (!alive && D.hint) txt(D.hint, 26, 280, '500 9px ' + F, P.lav, 'left', 1);
+    if (lanes.length) {
+      // the headlines stand beside the traces on a glass column in the sky (the sun's striped half shows under it);
+      // the fonts (label, percentage, reset) and the baselines of the last two under the label row: 26 px over two lanes, 15 over three
+      const three = lanes.length > 2, lf = (three ? '10px ' : '11px ') + F, lh = 14, hx = W - 24;
+      const [hf, hs, pf, sf, ss, py, sy] = three ? ['600 9px ', 1, 'italic 900 15px ', '600 8px ', 0.5, 10, 18] : ['600 10px ', 2, 'italic 900 26px ', '600 9px ', 1, 19, 29];
+      panel(324, 42, W - 12 - 324, 100);
+      for (const { l, top, ecg, base, amp } of laneRows(44, 140, lh)) {
+        const on = busyOf(l.act), lab = labelOf(l.act), hd = headline(l), c = l.active ? col : hd.pct === null ? P.lav : tone(hd.pct);
+        ecg.draw(16, base, amp, { color: l.active ? col : l.pct === null ? P.lav : tone(l.pct), width: 2.5, fade: false, glow: 12, dotGlow: 14 });
+        const nw = txt(l.name, 16, top + lh - 2, '600 ' + lf, P.white, 'left', 1.5);
+        if (lab !== null) txt(lab, 16 + nw + 10, top + lh - 2, '600 ' + lf, on ? P.cyan : P.lav, 'left', 1.5);
+        txt(hd.label, hx, top + lh - 2, hf + F, P.lav, 'right', hs);
+        ctx.shadowColor = c; ctx.shadowBlur = 10; txt(hd.text, hx, top + lh + py, pf + F, c, 'right'); ctx.shadowBlur = 0;
+        txt(hd.sub, hx, top + lh + sy, sf + F, hd.dead ? '#ff4d4d' : P.white, 'right', ss);
+      }
+      if (!alive && D.hint) { const hw = Math.min(W - 24, measure(D.hint, '500 9px ' + F) + D.hint.length + 19); panel(12, 268, hw, 20); txt(D.hint, 22, 282, '500 9px ' + F, P.lav, 'left', 1); }
+    } else {
+      ECG.draw(16, 108, 42, { color: col, width: 2.5, fade: false, glow: 12, dotGlow: 14 });
+      const lab = activityLabel();
+      if (lab !== null) txt(lab, 16, 54, '600 11px ' + F, busy() ? P.cyan : P.lav, 'left', 1.5);
+      panel(12, 192, wide ? 270 : 212, 96);
+      const big = alive ? sessionPct + '%' : '--', bf = 'italic 900 52px ' + F;
+      const cg = ctx.createLinearGradient(0, 200, 0, 246); cg.addColorStop(0, '#ffffff'); cg.addColorStop(.55, '#ffffff'); cg.addColorStop(.56, '#ff9ad4'); cg.addColorStop(1, P.pink);
+      ctx.shadowColor = P.pink; ctx.shadowBlur = 14; txt(big, 24, 250, bf, cg); ctx.shadowBlur = 0;
+      if (alive && multi()) {   // the qualified name and the reset no longer share a line: two, a size down
+        txt(sessionLabel(), 26, 264, '600 10px ' + F, P.white, 'left', wide ? 2 : 1);
+        txt(resetText(session), 26, 277, '600 10px ' + F, P.white, 'left', wide ? 2 : 1);
+      } else txt(alive ? 'SESSION · ' + resetText(session) : 'NO SIGNAL', 26, 270, '600 11px ' + F, alive ? P.white : '#ff4d4d', 'left', wide ? 2 : 1);
+      if (!alive && D.hint) txt(D.hint, 26, 280, '500 9px ' + F, P.lav, 'left', 1);
+    }
     if (shown.length) {
       const pw = shown.length * per + 16, px0 = W - 12 - pw, r = wide ? 23 : 19;
       panel(px0, 192, pw, 96);
@@ -571,7 +614,7 @@
   }};
 
   // ---- 5. ANALOG: VU meters and a chart recorder ---------------------------------------------
-  THEMES.analog = { pixel: false, ecg: 448, laneEcg: 384, needle: 0, needles: [0, 0, 0], draw(t, dt) {
+  THEMES.analog = { pixel: false, ecg: 448, laneEcg: 300, needle: 0, needles: [0, 0, 0], draw(t, dt) {
     const P = { case: '#1b1917', cream: '#efe6cf', cream2: '#e4d9bd', ink: '#1c1a17', red: '#c8322b', dim: '#8a8069', brass: '#c9a227', blue: '#9db4c6' };
     const F = '"Helvetica Neue", Helvetica, Arial, sans-serif';
     ctx.fillStyle = P.case; ctx.fillRect(0, 0, W, H);
@@ -610,14 +653,21 @@
     for (let x = sx + 8; x < sx + sw; x += 8) { ctx.moveTo(x + .5, sy + 4); ctx.lineTo(x + .5, sy + sh - 4); }
     for (let y = sy + 8; y < sy + sh; y += 8) { ctx.moveTo(sx + 4, y + .5); ctx.lineTo(sx + sw - 4, y + .5); } ctx.stroke();
     const pen = hx => { ctx.fillStyle = P.red; ctx.beginPath(); ctx.moveTo(hx, sy + 4); ctx.lineTo(hx - 4, sy - 2); ctx.lineTo(hx + 4, sy - 2); ctx.closePath(); ctx.fill(); };
-    if (lanes.length) {   // the names in a column on the left, the pens to their right
+    if (lanes.length) {   // the names in a column on the left, the pens to their right, each pen's reading in the margin
       txt('ACTIVITY', sx + 12, sy + 16, '700 9px ' + F, lanes.some(l => busyOf(l.act)) ? P.red : P.dim, 'left', 2);
-      for (const { l, top, h: lh, ecg, base, amp } of laneRows(sy + 22, sy + sh - 12, 0)) {
-        const on = busyOf(l.act), lab = labelOf(l.act);
+      const three = lanes.length > 2, rx = sx + sw - 12, ink = p => p >= 85 ? P.red : P.ink;   // the reading turns red in the gauges' red band
+      for (const { l, top, h: lh, ecg, base, amp } of laneRows(sy + 22, sy + sh - 16, 0)) {   // the lanes stop short of the footer line
+        const on = busyOf(l.act), lab = labelOf(l.act), hd = headline(l);
         txt(l.name, sx + 12, top + lh / 2 - 1, '700 8px ' + F, P.ink, 'left', 2);
         if (lab !== null) txt(lab.split(' · ')[0], sx + 12, top + lh / 2 + 8, '500 7px ' + F, on ? P.red : P.dim, 'left', 1);
         ecg.draw(sx + 76, base, amp, { color: P.ink, width: 1.4, fade: false, dot: false, gap: 24 });
         pen(sx + 76 + ecg.head);
+        // the reading at the margin: the window's name, the percentage, the time left; two lines on three lanes, where
+        // a lane with no reading says why in place of the dashes
+        txt(hd.label, rx, top + (three ? 6 : 7), '700 7px ' + F, P.dim, 'right', 1);
+        if (three && hd.dead) txt(hd.sub, rx, top + 16, '700 9px ' + F, P.red, 'right', 0.5);
+        else txt(hd.text, rx, top + (three ? 16 : 18), (three ? '700 11px ' : '700 12px ') + F, hd.pct === null ? P.dim : ink(hd.pct), 'right');
+        if (!three) txt(hd.sub.replace(/^RESET /, ''), rx, top + 25, '500 7px ' + F, hd.dead ? P.red : P.dim, 'right', 0.5);
       }
     } else {
       ECG.draw(sx + 12, sy + 58, 30, { color: P.ink, width: 1.4, fade: false, dot: false, gap: 24 });
