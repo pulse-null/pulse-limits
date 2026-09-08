@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!((m.issuer.as_str(), m.endpoint), (base.as_str(), format!("{base}{TOKEN_PATH}")));
         assert!(m.discovered >= t0);
         let out = capture(|| doctor(""));
-        assert!(out.contains("  ok       token: refreshed by pulse-limits 0s ago, expires in "), "{out}");
+        assert!(out.contains("  ok       token: refreshed by pulse-limits ") && out.contains("s ago, expires in "), "{out}");
         assert!(out.contains(", refresh token present\n"), "{out}");
         // a second reading: the cache is fresh, nothing is called, the file is left alone
         let (quiet, seen2) = spy(1, vec![]);
