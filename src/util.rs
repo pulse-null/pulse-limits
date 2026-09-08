@@ -234,36 +234,57 @@ pub fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 /// The folder holding panel.html, the SwiftBar shims and bin/: the parent of the folder this
-/// binary sits in. A Homebrew install is reached through opt/pulse-limits, a path that stays
-/// valid across `brew upgrade` (the SwiftBar link points into it). `PULSE_LIB` overrides.
+/// binary sits in. Looked up from the path we were invoked by before the resolved one, and
+/// without resolving symlinks, so a Homebrew install is reached through opt/pulse-limits, a
+/// path that stays valid across `brew upgrade` (the SwiftBar link points into it), and a
+/// `~/.local/bin` symlink to a checkout falls through to the checkout itself. `PULSE_LIB`
+/// overrides.
 pub fn lib_dir() -> PathBuf {
     if let Some(d) = env_path("PULSE_LIB") {
         return d;
     }
     let has_panel = |d: &Path| d.join("panel.html").is_file();
-    let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("pulse-limits"));
-    if let Some(here) = exe.parent() {
-        let up = here.join("..");
-        if has_panel(&up) {
-            return normalize(&up);
+    let mut candidates: Vec<PathBuf> = vec![];
+    if let Some(argv0) = env::args_os().next().map(PathBuf::from) {
+        if argv0.components().count() > 1 {
+            candidates.push(if argv0.is_absolute() { argv0 } else { env::current_dir().unwrap_or_default().join(argv0) });
+        } else if let Some(found) = which(&argv0.to_string_lossy()) {
+            candidates.push(found);
         }
-        let opt = up.join("opt").join("pulse-limits").join("libexec");
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Ok(real) = exe.canonicalize() {
+            candidates.push(real);
+        }
+        candidates.push(exe);
+    }
+    for exe in &candidates {
+        let Some(here) = exe.parent() else { continue };
+        let up = clean(&here.join(".."));
+        if has_panel(&up) {
+            return up;
+        }
+        let opt = clean(&here.join("..").join("opt").join("pulse-limits").join("libexec"));
         if has_panel(&opt) {
-            return normalize(&opt);
+            return opt;
         }
     }
-    if let Some(real) = exe.canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
-        let up = real.join("..");
-        if has_panel(&up) {
-            return normalize(&up);
-        }
-    }
-    exe.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+    candidates.first().and_then(|e| e.parent()).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Resolves `..` and symlinks, falling back to the path as given.
-fn normalize(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+/// Lexical `..` and `.` removal, no symlink resolution.
+fn clean(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 pub fn mtime(p: &Path) -> Option<i64> {

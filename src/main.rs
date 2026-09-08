@@ -50,13 +50,13 @@ const HELP: &str = "pulse-limits: your Claude and Codex plan limits as a retro p
   pulse-limits reset         drop the cached readings so the next run asks live";
 
 fn main() {
+    let lib = util::lib_dir(); // from the invoked path and the PATH we were started with, before it is pinned
     // SwiftBar hands the plugin launchd's PATH: pin our own. Waybar (or a Nix wrapper) hands us one worth keeping.
     let path = env::var("PATH").unwrap_or_default();
     env::set_var("PATH", if is_macos() { "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin".to_string() } else { format!("{path}{}/usr/local/bin:/usr/bin:/bin", if path.is_empty() { "" } else { ":" }) });
     let args: Vec<String> = env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let arg = args.get(1);
-    let lib = util::lib_dir();
     let code = match cmd {
         "install" => bar::install(&lib),
         "uninstall" => bar::uninstall(&lib),
