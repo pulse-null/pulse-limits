@@ -930,22 +930,24 @@ fn key(app: &mut App, k: KeyEvent) -> bool {
 
 /// One frame: fold in what the feed published, lay out for the terminal's size, advance the
 /// trace by `dt` seconds and draw at time `t`.
-fn frame<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, app: &mut App, dt: f64, t: f64) -> io::Result<()> {
+fn frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, dt: f64, t: f64) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     app.apply();
-    let size = terminal.size()?;
+    let size = terminal.size().map_err(io::Error::other)?;
     let l = layout(app, size.width, size.height);
     let bpm = app.bpm();
     app.ecg.step(dt, bpm);
-    terminal.draw(|f| render(f, app, &l, t))?;
+    terminal.draw(|f| render(f, app, &l, t)).map_err(io::Error::other)?;
     Ok(())
 }
 
 /// Frames at ~20 fps until q; `next_event` waits up to the given time for a terminal event.
-fn run_loop<B: Backend<Error = io::Error>>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-    mut next_event: impl FnMut(Duration) -> io::Result<Option<Event>>,
-) -> io::Result<()> {
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, mut next_event: impl FnMut(Duration) -> io::Result<Option<Event>>) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut last = Instant::now();
     let mut next_frame = Instant::now();
     loop {
@@ -1063,4 +1065,415 @@ fn launch(provider: Option<String>, theme: Option<usize>) -> i32 {
         return 1;
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    use super::*;
+    use crate::providers::testing::{Sandbox, ENV};
+    use crate::util::{iso_utc, now as now_i, write_atomic};
+
+    /// A feed with the given documents already published: nothing is spawned.
+    fn feed(payload: Option<Value>, activity: Option<Value>, provider: Option<&str>) -> Feed {
+        let shared = Shared { payload, activity, version: 1 };
+        Feed {
+            shared: Arc::new(Mutex::new(shared)),
+            poke: Arc::new(AtomicBool::new(false)),
+            panel_url: PathBuf::from("/nowhere/panel.url"),
+            provider: provider.map(str::to_string),
+        }
+    }
+
+    /// The screen with that payload folded in, UTC, truecolor.
+    fn app(payload: Value, activity: Option<Value>, provider: Option<&str>) -> App {
+        let mut a = App::new(feed(Some(payload), activity, provider), 0);
+        a.tz = 0;
+        a.truecolor = true;
+        assert!(a.apply());
+        a
+    }
+
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// One frame on a w x h test terminal at time `t`; the rows as text.
+    fn draw(a: &mut App, w: u16, h: u16, t: f64) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        frame(&mut term, a, 0.05, t).unwrap();
+        let buf = term.backend().buffer();
+        (0..h).map(|y| (0..w).map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()).unwrap_or_default()).collect()).collect()
+    }
+
+    fn ts(offset: i64) -> String {
+        iso_utc(now_i() + offset)
+    }
+
+    /// Claude at 13 % (16 % dead-reckoned), five windows, 3.4K tok/min in two sessions, credits.
+    fn busy() -> Value {
+        let n = now_i();
+        json!({
+            "provider": "claude", "plan": "MAX 20X", "source": "LIVE", "theme": "crt", "fetched": n - 30,
+            "history": [[n - 3600, 9], [n - 7200, 40], [n - 100, 13], [n - 20 * 3600, 99], ["junk"], [n - 200]],
+            "activity": {"tok_per_min": 3400, "idle_s": 2, "sessions": 2},
+            "status": "", "hint": "",
+            "windows": [
+                {"label": "SESSION", "pct": 13, "resets": ts(2 * 3600 + 14 * 60 + 30)},
+                {"label": "WEEK", "pct": 17.0, "resets": ts(4 * 86400 + 7 * 3600 + 30)},
+                {"label": "FABLE", "pct": 30, "resets": ts(3600 + 30)},
+                {"label": "COWORK", "pct": 62, "resets": null},
+                {"label": "SCOPED", "pct": 90, "resets": "not a date"},
+                {"pct": 5}
+            ],
+            "credits": {"used": 1.5, "currency": "EUR"},
+            "providers": [{"name": "claude"}, {"name": "codex"}],
+            "estimate": {"pct_est": 15.8, "pct_api": 13, "calibrated": true, "k": 0.001, "samples": 2, "tokens_since": 2750}
+        })
+    }
+
+    /// The row the big digits start on: centred in the body, with their reset line when there is room.
+    fn digits_top(l: &Layout) -> usize {
+        (l.body_y + (l.body_h - if l.reset_in_body { 6 } else { 5 }) / 2) as usize
+    }
+
+    fn big_rows(big: &str) -> Vec<String> {
+        (0..5).map(|r| big.chars().map(|c| glyph(c)[r].replace('#', "█")).collect::<Vec<_>>().join(" ")).collect()
+    }
+
+    #[test]
+    fn busy_screen_at_every_size() {
+        let mut a = app(busy(), None, None);
+        assert_eq!((a.alive, a.session_pct, a.others.len(), a.estimating(), a.busy()), (true, 16, 4, true, true));
+        assert_eq!(a.session.as_ref().unwrap().label, "SESSION");
+        assert_eq!(a.activity_label().as_deref(), Some("3.4K TOK/MIN · 2 SESSIONS"));
+        assert!(a.fresh());
+        assert!((a.bpm() - (60.0 + 60.0 * 35.0f64.log10())).abs() < 1e-9);
+        assert_eq!(a.buckets(4).len(), 4);
+        assert_eq!((a.buckets(12)[11], a.buckets(12)[10], a.buckets(12)[9], a.buckets(12)[0]), (13.0, 9.0, 40.0, -1.0));
+        assert!(!a.apply(), "nothing new in the feed");
+        // 90x28: the wide layout, everything on
+        let l = layout(&mut a, 90, 28);
+        assert_eq!(
+            (l.big.as_str(), l.reset.as_str(), l.reset_in_body, l.n_win, l.m, l.wide, l.too_small),
+            ("16%", "RESET 2H 14M · EST", true, 4, 2, true, false)
+        );
+        assert!(l.rule_y.is_some() && l.spark_label_y.is_some() && l.axis_y.is_some());
+        let rows = draw(&mut a, 90, 28, 1001.0); // an odd second: the LIVE dot is on
+        assert!(rows[0].starts_with("  PULSE LIMITS"), "{}", rows[0]);
+        assert!(rows[0].trim_end().ends_with("CLAUDE · MAX 20X  ● LIVE"), "{}", rows[0]);
+        assert!(rows[1].trim().chars().all(|c| c == '─') && rows[1].len() > 80);
+        let text = rows.join("\n");
+        assert!(text.contains("● 3.4K TOK/MIN · 2 SESSIONS"), "{text}");
+        let top = digits_top(&l);
+        for (r, want) in big_rows("16%").iter().enumerate() {
+            assert!(rows[top + r].trim_end().ends_with(want.trim_end()), "digit row {r}: {:?}", rows[top + r]);
+        }
+        assert!(rows[top + 5].trim_end().ends_with("RESET 2H 14M · EST"), "{}", rows[top + 5]);
+        assert!(rows[l.bar_y as usize].contains("█") && rows[l.bar_y as usize].contains("░"));
+        assert!(text.contains("WEEK ") && text.contains(" 17%  RESET 4D 07H"), "{text}");
+        assert!(text.contains("FABLE") && text.contains(" 30%  RESET 1H 00M"), "{text}");
+        assert!(text.contains("COWORK") && text.contains(" 62%  RESET ?"), "{text}");
+        assert!(text.contains("SCOPED") && text.contains(" 90%  RESET ?"), "{text}");
+        assert!(text.contains("SESSION · 12H"), "{text}");
+        let axis = &rows[l.axis_y.unwrap() as usize];
+        assert!(axis.trim_start().starts_with("-12H") && axis.trim_end().ends_with("NOW"), "{axis}");
+        let baseline = &rows[(l.spark_y + l.spark_h - 1) as usize];
+        assert!(baseline.contains('·') && baseline.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)), "{baseline}");
+        assert!(rows[27].starts_with("  UPDATED 3") && rows[27].contains("S AGO · NEXT RESET "), "{}", rows[27]);
+        assert!(rows[27].trim_end().ends_with("CREDITS 1.50 EUR") && !rows[27].contains("q quit"), "no room for the keys next to the credits: {}", rows[27]);
+        let rows = draw(&mut a, 100, 28, 1001.0);
+        assert!(rows[27].trim_end().ends_with("CREDITS 1.50 EUR   q quit  t theme  r reload  ? help"), "{}", rows[27]);
+        // an even second: the dot is off
+        let rows = draw(&mut a, 90, 28, 1000.0);
+        assert!(rows[0].trim_end().ends_with("MAX 20X    LIVE"), "{}", rows[0]);
+        // 60x18: still wide, the reset moves next to the bar, no gaps
+        let l = layout(&mut a, 60, 18);
+        assert_eq!((l.m, l.wide, l.reset_in_body, l.n_win, l.body_h, l.spark_h), (1, true, false, 4, 5, 1));
+        let rows = draw(&mut a, 60, 18, 1001.0);
+        let text = rows.join("\n");
+        assert!(rows[0].starts_with(" PULSE LIMITS"), "{}", rows[0]);
+        assert!(rows[l.bar_y as usize].trim_end().ends_with("RESET 2H 14M · EST"), "{}", rows[l.bar_y as usize]);
+        assert!(text.contains("SESSION") && text.contains(" 17%  RESET 4D 07H"), "{text}");
+        assert!(rows[17].contains("CREDITS 1.50 EUR") && !rows[17].contains("q quit"), "no room for the keys at 60 columns: {}", rows[17]);
+        // 40x12: narrow, two windows, the session count and the keys dropped
+        let l = layout(&mut a, 40, 12);
+        assert_eq!((l.wide, l.n_win, l.reset.as_str(), l.rule_y, l.axis_y), (false, 2, "2H 14M·EST", None, None));
+        let rows = draw(&mut a, 40, 12, 1001.0);
+        let text = rows.join("\n");
+        assert!(text.contains("● 3.4K TOK/MIN") && !text.contains("SESSIONS"), "{text}");
+        assert!(text.contains(" 17%  4D 07H"), "{text}");
+        assert!(!text.contains("SCOPED") && !text.contains("q quit"), "{text}");
+        assert!(rows[11].starts_with(" UPDATED 3"), "{}", rows[11]);
+        // 30x10: the smallest screen that still draws; 20x5: TOO SMALL
+        let rows = draw(&mut a, 30, 10, 1001.0);
+        assert!(rows[0].starts_with(" PULSE LIMITS"), "{}", rows[0]);
+        assert!(!layout(&mut a, 30, 10).too_small);
+        let rows = draw(&mut a, 20, 5, 1001.0);
+        assert_eq!(rows[2].trim(), "TOO SMALL");
+        assert!(rows.iter().all(|r| !r.contains("PULSE")));
+        assert!(layout(&mut a, 29, 20).too_small && layout(&mut a, 40, 9).too_small);
+    }
+
+    #[test]
+    fn idle_stale_themes_help_and_keys() {
+        let n = now_i();
+        let mut p = busy();
+        p["fetched"] = json!(n - 600);
+        p["activity"] = json!({"tok_per_min": 0, "idle_s": 754, "sessions": 0});
+        p["credits"] = Value::Null;
+        p["estimate"] = json!({"pct_est": 13.0, "pct_api": 13, "calibrated": false});
+        p["providers"] = json!([{"name": "claude"}]);
+        let mut a = app(p, None, None);
+        a.truecolor = false;
+        assert_eq!((a.session_pct, a.estimating(), a.busy(), a.bpm(), a.fresh()), (13, false, false, 0.0, false));
+        assert_eq!(a.activity_label().as_deref(), Some("IDLE 12M"));
+        let rows = draw(&mut a, 90, 28, 1001.0);
+        assert!(rows[0].trim_end().ends_with("MAX 20X") && !rows[0].contains("LIVE") && !rows[0].contains("CLAUDE ·"), "{}", rows[0]);
+        let text = rows.join("\n");
+        assert!(text.contains("● IDLE 12M"), "{text}");
+        assert!(rows[27].starts_with("  UPDATED 10M AGO · NEXT RESET ") && !text.contains("CREDITS"), "{}", rows[27]);
+        assert!(text.contains("RESET 2H 14M\n") || rows.iter().any(|r| r.trim_end().ends_with("RESET 2H 14M")), "no EST marker: {text}");
+        // t cycles the five themes (ANSI and truecolor), ? opens the help, r pokes the feed, q and ctrl-c quit
+        for (i, name) in THEMES.iter().enumerate().skip(1).chain(std::iter::once((0, &THEMES[0]))) {
+            assert!(!key(&mut a, press('t')));
+            assert_eq!((a.theme, THEMES[a.theme]), (i, *name));
+            for truecolor in [false, true] {
+                a.truecolor = truecolor;
+                let rows = draw(&mut a, 60, 18, 1000.0);
+                assert!(rows[0].starts_with(" PULSE LIMITS"), "{name}: {}", rows[0]);
+            }
+        }
+        assert!(!key(&mut a, press('T')));
+        assert_eq!(a.theme, 1);
+        assert!(!key(&mut a, press('?')));
+        assert!(a.help);
+        let rows = draw(&mut a, 90, 28, 1000.0);
+        let text = rows.join("\n");
+        assert!(text.contains(" PULSE LIMITS ") && text.contains("q   quit") && text.contains("t   next theme (now modern)"), "{text}");
+        assert!(text.contains("r   re-read the payload now") && text.contains("?   close this help"), "{text}");
+        assert!(
+            text.contains("payload   /nowhere/panel.url every 5s") && text.contains("built in process every 120s (once now if that file is stale)"),
+            "{text}"
+        );
+        assert!(text.contains("│ activity  "), "{text}");
+        assert!(!key(&mut a, press('?')));
+        assert!(!a.help);
+        assert!(!key(&mut a, press('R')));
+        assert!(a.feed.poke.load(Ordering::Relaxed));
+        assert!(!key(&mut a, press('x')));
+        assert!(!key(&mut a, KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release)));
+        assert!(key(&mut a, press('q')) && key(&mut a, press('Q')));
+        assert!(key(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert!(!key(&mut a, press('c')));
+        // a named provider: the help says so
+        let mut a = app(busy(), None, Some("codex"));
+        a.help = true;
+        let text = draw(&mut a, 90, 28, 1000.0).join("\n");
+        assert!(text.contains("payload   built in process every 120s, for codex (panel.url left alone)"), "{text}");
+    }
+
+    #[test]
+    fn no_login_no_provider_and_a_weekly_pool() {
+        let n = now_i();
+        let hint = "NO CLAUDE.AI LOGIN FOUND. RUN: pulse-limits doctor";
+        let p = json!({"provider": "claude", "plan": "", "source": "", "theme": "crt", "fetched": 0, "history": [],
+            "activity": {"tok_per_min": 0, "idle_s": 5, "sessions": 0}, "status": "NO LOGIN", "hint": hint,
+            "windows": [], "credits": null, "providers": [{"name": "claude"}]});
+        let mut a = app(p, None, None);
+        assert!(!a.alive && a.session.is_none() && a.bpm() == 0.0 && !a.fresh());
+        assert_eq!(a.next_reset(), "?");
+        assert_eq!(a.status_info(1.0), ("? NO LOGIN".to_string(), "bad"));
+        let l = layout(&mut a, 60, 18);
+        assert_eq!((l.big.as_str(), l.reset.as_str(), l.n_win), ("--", "", 0));
+        let rows = draw(&mut a, 60, 18, 1000.0); // (t * 2) even: NO SIGNAL is on
+        let text = rows.join("\n");
+        assert!(rows[0].trim_end().ends_with("? NO LOGIN"), "{}", rows[0]);
+        assert!(text.contains("NO SIGNAL") && text.contains("? NO LOGIN"), "{text}");
+        assert!(text.contains(hint), "the hint is wider than the trace and spans the screen: {text}");
+        let top = digits_top(&l);
+        for (r, want) in big_rows("--").iter().enumerate() {
+            assert!(rows[top + r].trim_end().ends_with(want.trim_end()), "digit row {r}: {:?}", rows[top + r]);
+        }
+        assert!(rows[l.bar_y as usize].contains("░") && !rows[l.bar_y as usize].contains("█"));
+        assert!(rows[17].trim_start().starts_with(hint), "{}", rows[17]);
+        let text = draw(&mut a, 60, 18, 1000.5).join("\n");
+        assert!(!text.contains("NO SIGNAL") && text.contains("? NO LOGIN"), "{text}");
+        // no provider at all
+        let p = json!({"provider": "", "plan": "", "status": "NO PROVIDER SELECTED", "hint": "", "windows": [], "providers": []});
+        let mut a = app(p, None, None);
+        let text = draw(&mut a, 90, 28, 1000.0).join("\n");
+        assert!(text.contains("? NO PROVIDER SELECTED"), "{text}");
+        // a weekly pool only, from a second provider: its first window is the big number, no EST
+        let p = json!({"provider": "grok", "plan": "X PREMIUM+", "fetched": n - 10, "status": "", "hint": "", "history": [],
+            "windows": [{"label": "WEEK", "pct": 37.5, "resets": ts(3 * 86400 + 30)}],
+            "providers": [{"name": "claude"}, {"name": "grok"}], "activity": {"tok_per_min": 0, "idle_s": 0, "sessions": 0}});
+        let mut a = app(p, Some(json!({"tok_per_min": 120, "idle_s": 0, "sessions": 1})), None);
+        assert_eq!((a.session.as_ref().map(|w| w.label.as_str()), a.session_pct, a.others.len()), (Some("WEEK"), 38, 0));
+        assert_eq!(a.activity_label().as_deref(), Some("120 TOK/MIN"), "the feed's activity beats the payload's");
+        let rows = draw(&mut a, 90, 28, 1001.0);
+        assert!(rows[0].trim_end().ends_with("GROK · X PREMIUM+  ● LIVE"), "{}", rows[0]);
+        let text = rows.join("\n");
+        assert!(text.contains("RESET 3D 00H") && !text.contains("EST"), "{text}");
+        // a failed refresh over a cached reading: the warning and the last-good age, blinking
+        let mut p = busy();
+        p["status"] = json!("TOKEN EXPIRED");
+        p["hint"] = json!("OPEN CLAUDE CODE ONCE, IT REFRESHES THE TOKEN");
+        p["fetched"] = json!(n - 300);
+        let mut a = app(p, None, None);
+        assert_eq!(a.status_info(1.0).1, "warn");
+        for t in [1000.0, 1000.5] {
+            let rows = draw(&mut a, 90, 28, t);
+            assert!(rows[0].trim_end().ends_with("○ TOKEN EXPIRED"), "{}", rows[0]);
+            assert!(rows[27].starts_with("  ? TOKEN EXPIRED · LAST GOOD 5M AGO"), "{}", rows[27]);
+        }
+        // a payload that is not an object changes nothing; a missing activity reading is fine
+        let mut a = App::new(feed(Some(json!([1, 2])), None, None), 4);
+        assert!(a.apply());
+        assert_eq!((a.status().as_str(), a.alive, a.act, a.theme), ("NO DATA", false, None, 4));
+        assert_eq!(a.activity_label(), None);
+        assert_eq!(a.bpm(), 0.0);
+        let mut a = App::new(feed(Some(json!({"windows": [{"label": "SESSION", "pct": 1}], "status": ""})), None, None), 0);
+        assert!(a.apply());
+        assert_eq!(a.bpm(), 60.0, "no reading yet: a resting pulse");
+    }
+
+    #[test]
+    fn the_trace_and_its_colours() {
+        let mut e = Ecg::default();
+        e.step(1.0, 60.0); // no columns yet: nothing to do
+        e.init(40);
+        assert_eq!(e.cols.len(), 40);
+        e.init(40);
+        let mut beat = false;
+        for _ in 0..200 {
+            e.step(0.02, 120.0);
+            beat |= e.beat > 0.0;
+        }
+        assert!(beat, "the R spike fired");
+        assert!(e.cols.iter().any(|c| *c > 0.5), "{:?}", e.cols);
+        assert!(Ecg::shape(0.335) > 0.9 && Ecg::shape(0.0).abs() < 0.01);
+        e.step(5.0, 0.0);
+        assert!(e.cols.iter().all(|c| *c == 0.0), "a flat line at 0 bpm");
+        e.init(20);
+        assert_eq!((e.cols.len(), e.head), (20, 0));
+        use Color::*;
+        assert_eq!(faded(Rgb(100, 100, 100), 0.5, true), Rgb(50, 50, 50));
+        assert_eq!(faded(LightGreen, 0.7, false), LightGreen);
+        for (from, to) in [
+            (LightGreen, Green),
+            (LightRed, Red),
+            (LightYellow, Yellow),
+            (LightCyan, Cyan),
+            (LightMagenta, Magenta),
+            (LightBlue, Blue),
+            (White, Gray),
+            (Gray, DarkGray),
+            (Blue, Blue),
+        ] {
+            assert_eq!(faded(from, 0.4, false), to);
+        }
+        assert_eq!(rgb(0x8fd3ff), Rgb(0x8f, 0xd3, 0xff));
+        assert_eq!(glyph('x')[2], "###");
+    }
+
+    #[test]
+    fn the_loop_draws_frames_until_q() {
+        let mut a = app(busy(), None, None);
+        let mut term = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        let mut script: VecDeque<Option<Event>> =
+            [None, Some(Event::Key(press('t'))), Some(Event::Resize(30, 10)), None, Some(Event::Key(press('?'))), Some(Event::Key(press('r'))), None].into();
+        let mut polls = 0;
+        run_loop(&mut term, &mut a, |wait| {
+            polls += 1;
+            thread::sleep(wait.min(Duration::from_millis(60)));
+            Ok(script.pop_front().unwrap_or(Some(Event::Key(press('q')))))
+        })
+        .unwrap();
+        assert_eq!((polls, a.theme, a.help, a.feed.poke.load(Ordering::Relaxed)), (8, 1, true, true));
+        assert!(!a.ecg.cols.is_empty() && a.seen == 1);
+        let buf = term.backend().buffer();
+        let first: String = (0..30).map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()).unwrap_or_default()).collect();
+        assert!(first.starts_with(" PULSE LIMITS"), "{first}");
+    }
+
+    #[test]
+    fn the_feed_reads_the_panel_url_or_builds_the_payload() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("tui-feed");
+        let url = s.scratch.cache().join("panel.url");
+        assert!(age_of(&url).is_none());
+        // a fresh panel.url a bar wrote: read (once per mtime), and no build of our own
+        let b = payload::assemble(vec![], vec![], "", "crt", json!({"tok_per_min": 0, "idle_s": 1, "sessions": 0}));
+        write_atomic(&url, b.panel_url(&s.scratch.0.join("lib")).as_bytes()).unwrap();
+        assert!(age_of(&url).unwrap() < Duration::from_secs(5));
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let poke = Arc::new(AtomicBool::new(false));
+        let mut p = Poller::new(shared.clone(), poke.clone(), url.clone(), None);
+        assert!(!p.stale());
+        p.tick();
+        {
+            let sh = shared.lock().unwrap();
+            assert_eq!((sh.version, sh.payload.as_ref().unwrap()["status"].as_str()), (2, Some("NO PROVIDER SELECTED")));
+            assert_eq!(sh.activity.as_ref().unwrap()["sessions"], 0);
+        }
+        p.tick();
+        assert_eq!(shared.lock().unwrap().version, 2, "nothing moved: nothing published");
+        poke.store(true, Ordering::Relaxed);
+        p.tick();
+        assert_eq!(shared.lock().unwrap().version, 3, "r re-reads the file; it is fresh, so no build");
+        // a named provider: no panel.url, a build now (grok has no login in the sandbox), the file left alone
+        let before = std::fs::read_to_string(&url).unwrap();
+        let mut p = Poller::new(shared.clone(), poke.clone(), url.clone(), Some("grok".into()));
+        assert!(p.stale());
+        p.tick();
+        {
+            let sh = shared.lock().unwrap();
+            let v = sh.payload.as_ref().unwrap();
+            assert_eq!((v["provider"].as_str(), v["status"].as_str()), (Some("grok"), Some("NO LOGIN")));
+        }
+        assert_eq!(std::fs::read_to_string(&url).unwrap(), before);
+        // no panel.url at all: stale, so the first tick builds and writes it
+        std::fs::remove_file(&url).unwrap();
+        let mut p = Poller::new(shared.clone(), poke, url.clone(), None);
+        assert!(p.stale());
+        p.tick();
+        assert!(url.is_file());
+        assert_eq!(shared.lock().unwrap().payload.as_ref().unwrap()["status"], "NO PROVIDER SELECTED");
+        // what counts as a panel.url
+        assert!(read_panel_url(Path::new("/nowhere/panel.url")).is_none());
+        for text in ["no hash at all", "file:///x.html#!!!not base64!!!", &format!("file:///x.html#{}", crate::util::base64_encode(b"{\"a\":1}"))] {
+            write_atomic(&url, text.as_bytes()).unwrap();
+            assert!(read_panel_url(&url).is_none(), "{text}");
+        }
+        write_atomic(&url, format!("file:///x.html#{}\n", crate::util::base64_encode(b"{\"windows\":[]}")).as_bytes()).unwrap();
+        assert_eq!(read_panel_url(&url), Some(json!({"windows": []})));
+        // the saved theme and the terminal's colour depth
+        assert_eq!(saved_theme(), 0);
+        write_atomic(&config_dir().join("theme"), b"cyber\n").unwrap();
+        assert_eq!(saved_theme(), 2);
+        assert!(!App::new(feed(None, None, None), 3).truecolor);
+        std::env::set_var("COLORTERM", "truecolor");
+        let a = App::new(feed(None, None, None), 3);
+        assert!(a.truecolor && a.theme == 3 && a.status() == "NO DATA");
+        std::env::set_var("COLORTERM", "24bit");
+        assert!(App::new(feed(None, None, None), 0).truecolor);
+        // the command line
+        let args = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse(&args(&[])), Ok((None, None)));
+        assert_eq!(parse(&args(&["--theme=cyber", "codex"])), Ok((Some("codex".into()), Some(2))));
+        assert_eq!(parse(&args(&["--theme", "synth"])), Ok((None, Some(3))));
+        for bad in [vec!["--theme", "neon"], vec!["--theme"], vec!["--theme=neon"], vec!["--bogus"], vec!["gemini"], vec!["claude", "-x"]] {
+            assert_eq!(parse(&args(&bad)), Err(64), "{bad:?}");
+        }
+        assert_eq!(parse(&args(&["--help"])), Err(0));
+        assert_eq!(parse(&args(&["-h"])), Err(0));
+        assert_eq!(run(&args(&["--bogus"])), 64);
+        assert!(usage().starts_with("usage: pulse-limits tui [grok|claude|codex] [--theme crt|modern|cyber|synth|analog]"));
+        drop(s);
+    }
 }

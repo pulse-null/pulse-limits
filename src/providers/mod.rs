@@ -528,10 +528,8 @@ pub mod testing {
             for (name, target) in [("security", "false"), ("pgrep", "false"), ("defaults", "false"), ("open", "true"), ("pkill", "true")] {
                 std::os::unix::fs::symlink(real(target), bin.join(name)).unwrap();
             }
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let mut paths = vec![bin.clone()];
-            paths.extend(std::env::split_paths(&path));
-            std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+            // the system folders only: what this machine has on PATH (a CLI, say) must not show
+            std::env::set_var("PATH", std::env::join_paths([bin.clone(), "/usr/bin".into(), "/bin".into()]).unwrap());
             std::env::set_var("HOME", &home);
             std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude-config"));
             std::env::set_var("CLAUDE_PROJECTS_DIR", home.join("projects"));
@@ -548,6 +546,22 @@ pub mod testing {
 
         pub fn home(&self) -> std::path::PathBuf {
             self.scratch.0.join("home")
+        }
+
+        /// The folder PATH reaches first; `shim(name, target)` puts another stand-in there.
+        pub fn bin(&self) -> std::path::PathBuf {
+            self.scratch.0.join("bin")
+        }
+
+        pub fn shim(&self, name: &str, target: &str) {
+            let link = self.bin().join(name);
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(crate::util::which(target).unwrap_or_else(|| panic!("{target} not on PATH")), link).unwrap();
+        }
+
+        /// The enabled providers, as `pulse-limits provider` writes them.
+        pub fn enable(&self, list: &str) {
+            crate::util::write_atomic(&crate::util::config_dir().join("providers"), format!("{list}\n").as_bytes()).unwrap();
         }
 
         /// Claude Code's credentials file with a claude.ai login.

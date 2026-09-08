@@ -276,7 +276,7 @@ pub fn doctor(pstatus: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::testing::{refused, serve, Scratch, ENV};
+    use crate::providers::testing::{capture, refused, serve, Sandbox, Scratch, ENV};
 
     const LEGACY: &str = r#"{"five_hour":{"utilization":28.0,"resets_at":"2026-09-08T13:40:00.300893+00:00"},
         "seven_day":{"utilization":12.0,"resets_at":"2026-09-09T06:00:00.300975+00:00"},
@@ -395,6 +395,116 @@ mod tests {
         let mut st = Store::new("claude");
         fetch(&mut st, &serve(503, "down"), "tok");
         assert_eq!((st.status.as_str(), st.hint.as_str()), ("HTTP 503", "UNEXPECTED ANSWER FROM API.ANTHROPIC.COM"));
+        drop(s);
+    }
+
+    #[test]
+    fn run_from_the_credentials_file() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("claude-run");
+        // no login anywhere (the Keychain is unreachable in the sandbox): NO LOGIN, no call
+        let d = run(270);
+        assert_eq!(
+            (d.status.as_str(), d.hint.as_str(), d.source.as_str(), d.fetched, d.plan.as_str()),
+            ("NO LOGIN", "NO CLAUDE.AI LOGIN FOUND. RUN: pulse-limits doctor", "", 0, "")
+        );
+        assert!(!s.scratch.cache().join("last-reply-claude.json").exists());
+        // the file login: one live call, to the local server
+        let f = s.claude_login();
+        std::env::set_var("PULSE_CLAUDE_USAGE_URL", serve(200, LIMITS));
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.source.as_str(), d.plan.as_str(), d.windows.len(), d.history.len()), ("", "LIVE", "MAX 20X", 5, 1));
+        assert_eq!(d.credits, Value::Null);
+        // a fresh cache: no call (a call would say NETWORK)
+        std::env::set_var("PULSE_CLAUDE_USAGE_URL", refused());
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.source.as_str(), d.windows.len()), ("", "CACHE", 5));
+        let d = run(-1);
+        assert_eq!((d.status.as_str(), d.hint.as_str(), d.source.as_str()), ("NETWORK", "COULD NOT REACH API.ANTHROPIC.COM", "CACHE"));
+        // the legacy shape carries credits
+        std::env::set_var("PULSE_CLAUDE_USAGE_URL", serve(200, LEGACY));
+        let d = run(-1);
+        assert_eq!((d.windows.len(), d.credits), (2, json!({ "used": 1.5, "currency": "EUR" })));
+        // a file without a token
+        std::fs::write(&f, r#"{"claudeAiOauth":{"accessToken":"","subscriptionType":"pro"}}"#).unwrap();
+        let d = run(-1);
+        assert_eq!((d.status.as_str(), d.plan.as_str(), d.source.as_str()), ("NO LOGIN", "", "CACHE"));
+        assert_eq!(usage_url(), std::env::var("PULSE_CLAUDE_USAGE_URL").unwrap());
+        std::env::set_var("PULSE_CLAUDE_USAGE_URL", "  ");
+        assert_eq!(usage_url(), USAGE_URL);
+        drop(s);
+    }
+
+    #[test]
+    fn doctor_without_a_login() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("claude-doc-none");
+        let cfg = s.home().join("claude-config");
+        let out = capture(|| doctor(""));
+        assert!(out.contains(&format!("  ok       CLAUDE_CONFIG_DIR={} in this shell", cfg.display())), "{out}");
+        if is_macos() {
+            assert!(out.contains("  PROBLEM  Keychain 'Claude Code-credentials' / account '': listed but not readable from here\n"), "{out}");
+            assert!(out.contains("  ok       1 Keychain item(s) mention Claude\n"), "{out}");
+            assert!(out.contains("  PROBLEM  no claude.ai login found anywhere on this Mac.\n"), "{out}");
+            assert!(out.contains("security dump-keychain | grep -o"), "{out}");
+        } else {
+            assert!(out.contains("  PROBLEM  no claude.ai login found anywhere on this machine.\n"), "{out}");
+            assert!(out.contains(&format!("On Linux Claude Code writes {}/.credentials.json", cfg.display())), "{out}");
+        }
+        assert!(out.ends_with("  usage api\n  PROBLEM  skipped (no token)\n  last reply (shape digest)\n  PROBLEM  no reply cached yet\n"), "{out}");
+        // a pinned service, a Keychain that answers with something that is not JSON, a file with no login
+        crate::util::write_atomic(&crate::util::config_dir().join("keychain"), b"Claude Code-credentials-work\n").unwrap();
+        s.shim("security", "echo");
+        let f = cfg.join(".credentials.json");
+        crate::util::write_atomic(&f, b"{\"other\": 1}").unwrap();
+        let out = capture(|| doctor(""));
+        if is_macos() {
+            assert!(out.contains("  ok       pinned Keychain service: Claude Code-credentials-work\n"), "{out}");
+            assert!(out.contains("  PROBLEM  Keychain 'Claude Code-credentials-work' / account '': no claude.ai login in it (keys: not JSON, "), "{out}");
+            assert!(out.contains("  PROBLEM  Keychain 'Claude Code-credentials' / account '': no claude.ai login in it (keys: not JSON, "), "{out}");
+            assert!(out.contains("  ok       2 Keychain item(s) mention Claude\n"), "{out}");
+        }
+        assert!(out.contains(&format!("  PROBLEM  file {}: no claude.ai login in it\n", f.display())), "{out}");
+        assert!(out.contains("  PROBLEM  skipped (no token)\n"), "{out}");
+        drop(s);
+    }
+
+    #[test]
+    fn doctor_with_a_login_probes_only_after_a_failed_plugin_run() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("claude-doc-login");
+        let f = s.claude_login();
+        let out = capture(|| doctor(""));
+        assert!(out.contains(&format!("  ok       file {}: claude.ai login\n", f.display())), "{out}");
+        assert!(out.contains("  usage api\n  ok       reached through the plugin (not probed again: the endpoint has a small per-account quota)\n"), "{out}");
+        // backing off: not probed either
+        let st = Store::new("claude");
+        st.set_backoff(180);
+        let out = capture(|| doctor("RATE LIMITED"));
+        assert!(out.contains("  ok       not probed: backing off after a 429 until "), "{out}");
+        std::fs::remove_file(&st.backoff).unwrap();
+        // the probe, one answer per call
+        for (url, line) in [
+            (serve(200, LIMITS), "  ok       HTTP 200: {\"five_hour\":null,\"seven_day\":null}\n"),
+            (serve(200, LEGACY), "  ok       HTTP 200: {\"five_hour\":28.0,\"seven_day\":12.0}\n"),
+            (serve(200, "nope"), "  ok       HTTP 200: unexpected JSON shape\n"),
+            (serve(429, "{}"), "  PROBLEM  HTTP 429 rate limited: the account made too many usage calls recently"),
+            (refused(), "  PROBLEM  no answer from api.anthropic.com\n"),
+            (serve(503, "down\nfor now"), "  PROBLEM  HTTP 503: down for now\n"),
+        ] {
+            std::env::set_var("PULSE_CLAUDE_USAGE_URL", url);
+            let out = capture(|| doctor("HTTP 503"));
+            assert!(out.contains(line), "{out}");
+        }
+        // the digest of a cached limits[] reply
+        let mut st = Store::new("claude");
+        fetch(&mut st, &serve(200, LIMITS), "tok");
+        let out = capture(|| doctor(""));
+        assert!(
+            out.contains("  ok       cached reply (0 min old): {\"keys\":\"five_hour,seven_day,limits,extra_usage\",\"five_hour\":null,\"seven_day\":null,\"limits\":[{\"kind\":\"session\",\"percent\":13,\"model\":null},"),
+            "{out}"
+        );
+        assert!(out.contains("{\"kind\":\"weekly_scoped\",\"percent\":30,\"model\":\"Fable\"}"), "{out}");
         drop(s);
     }
 }

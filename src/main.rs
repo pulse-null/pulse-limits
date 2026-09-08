@@ -225,3 +225,118 @@ fn keychain_pin(name: Option<&String>) -> i32 {
     println!("pinned: {n}");
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::testing::{refused, serve, Sandbox, ENV};
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn run(s: &Sandbox, list: &[&str]) -> i32 {
+        dispatch(&s.scratch.0.join("lib"), &args(list))
+    }
+
+    #[test]
+    fn argument_handling_and_exit_codes() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("main-args");
+        assert_eq!(run(&s, &[]), 0); // help
+        for a in [["help"], ["-h"], ["--help"], ["version"]] {
+            assert_eq!(run(&s, &a), 0, "{a:?}");
+        }
+        assert_eq!(run(&s, &["frobnicate"]), 64);
+        // theme: written, then the bar is poked (open/pkill are stand-ins in the sandbox)
+        assert_eq!(run(&s, &["theme", "synth"]), 0);
+        assert_eq!(payload::theme(), "synth");
+        assert_eq!(run(&s, &["theme", "neon"]), 64);
+        assert_eq!(run(&s, &["theme"]), 64);
+        // provider
+        assert_eq!(run(&s, &["provider", "codex"]), 0);
+        assert_eq!(providers::enabled(), vec!["codex"]);
+        assert_eq!(run(&s, &["provider", "gemini"]), 64);
+        assert_eq!(run(&s, &["provider"]), 64);
+        // bar: the argument check only
+        assert_eq!(run(&s, &["bar", "sideways"]), 64);
+        // estimate
+        assert_eq!(run(&s, &["estimate", "13", "1788876097"]), 0);
+        assert!(s.scratch.cache().join("calib.json").is_file());
+        assert_eq!(run(&s, &["estimate", "13.5", "1788876097"]), 0);
+        assert_eq!(run(&s, &["estimate", "13"]), 64);
+        assert_eq!(run(&s, &["estimate", "x", "1"]), 64);
+        assert_eq!(run(&s, &["estimate", "13", "notanepoch"]), 64);
+        // tui: bad arguments never reach a terminal
+        assert_eq!(run(&s, &["tui", "gemini"]), 64);
+        assert_eq!(run(&s, &["tui", "--bogus"]), 64);
+        assert_eq!(run(&s, &["tui", "--theme", "neon"]), 64);
+        assert_eq!(run(&s, &["tui", "--help"]), 0);
+        assert_eq!(run(&s, &["claude", "--theme=neon"]), 64);
+        assert_eq!(run(&s, &["codex", "--bogus"]), 64);
+        assert_eq!(run(&s, &["grok", "gemini"]), 64);
+        // keychain
+        if is_macos() {
+            assert_eq!(run(&s, &["keychain"]), 64);
+            assert_eq!(run(&s, &["keychain", ""]), 64);
+            assert_eq!(run(&s, &["keychain", "Claude Code-credentials-work"]), 0);
+            assert_eq!(std::fs::read_to_string(config_dir().join("keychain")).unwrap(), "Claude Code-credentials-work\n");
+        } else {
+            assert_eq!(run(&s, &["keychain", "x"]), 64);
+        }
+        drop(s);
+    }
+
+    #[test]
+    fn readings_raw_reset_and_the_path_pin() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("main-readings");
+        let cache = s.scratch.cache();
+        // nothing enabled
+        assert_eq!(run(&s, &["raw"]), 1);
+        for cmd in ["status", "payload", "swiftbar", "waybar", "activity"] {
+            assert_eq!(run(&s, &[cmd]), 0, "{cmd}");
+        }
+        assert!(cache.join("panel.url").is_file());
+        // grok enabled with a login: status fetches from the local server, raw then shows the cached reply
+        s.enable("grok");
+        let grok = s.home().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(grok.join("auth.json"), r#"{"https://auth.x.ai::c": {"key": "opaque-token", "expires_at": "2099-01-01T00:00:00Z"}}"#).unwrap();
+        std::fs::write(cache.join("plan-grok"), "SUPERGROK\n").unwrap();
+        std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", serve(200, "{\"config\":{\"creditUsagePercent\":3,\"billingPeriodEnd\":\"2099-01-08T00:00:00Z\"}}"));
+        assert_eq!(run(&s, &["status"]), 0);
+        assert!(cache.join("usage-grok.json").is_file());
+        std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", refused());
+        assert_eq!(run(&s, &["raw"]), 0);
+        assert_eq!(run(&s, &["raw", "grok"]), 0);
+        assert_eq!(run(&s, &["swiftbar"]), 0);
+        assert_eq!(run(&s, &["waybar"]), 0);
+        // only a failed attempt: shown, and said so; nothing at all: 1; a cache that is not JSON: still 0
+        std::fs::remove_file(cache.join("usage-grok.json")).unwrap();
+        assert_eq!(run(&s, &["raw", "grok"]), 0);
+        assert_eq!(run(&s, &["raw", "codex"]), 1);
+        std::fs::write(cache.join("usage-grok.json"), "junk").unwrap();
+        assert_eq!(run(&s, &["raw"]), 0);
+        // an install from before the providers split still has Claude's files unsuffixed
+        std::fs::write(cache.join("usage.json"), "{\"five_hour\":{\"utilization\":1}}").unwrap();
+        std::fs::write(cache.join("last-reply.json"), "{\"http\":401}").unwrap();
+        assert_eq!(run(&s, &["raw", "claude"]), 0);
+        std::fs::remove_file(cache.join("usage.json")).unwrap();
+        assert_eq!(run(&s, &["raw", "claude"]), 0);
+        // refresh and reset drop the caches
+        assert_eq!(run(&s, &["refresh"]), 0);
+        assert!(!cache.join("usage-grok.json").exists());
+        assert_eq!(run(&s, &["reset"]), 0);
+        // the PATH pin: our own folders on macOS, the given PATH first on Linux
+        let saved = std::env::var_os("PATH").unwrap();
+        pin_path();
+        let p = std::env::var("PATH").unwrap();
+        assert!(p.ends_with("/usr/local/bin:/usr/bin:/bin"), "{p}");
+        std::env::set_var("PATH", "");
+        pin_path();
+        assert!(std::env::var("PATH").unwrap().ends_with("/usr/local/bin:/usr/bin:/bin"));
+        std::env::set_var("PATH", saved);
+        drop(s);
+    }
+}

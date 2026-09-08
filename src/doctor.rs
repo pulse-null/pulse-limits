@@ -129,3 +129,110 @@ fn run_on(lib: &Path, version: &str, macos: bool) -> i32 {
     ok(&b.payload.get("activity").map(Value::to_string).unwrap_or_default());
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::testing::{capture, refused, serve, Sandbox, ENV};
+    use serde_json::json;
+
+    const GROK_REPLY: &str = include_str!("../tests/fixtures/grok/fixture-200.json");
+
+    #[test]
+    fn the_chain_on_this_platform() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("doctor-here");
+        let lib = s.scratch.0.join("lib");
+        let out = capture(|| assert_eq!(run(&lib, "vTEST"), 0));
+        assert!(out.starts_with("PulseLimits doctor  ("), "{out}");
+        assert!(out.contains(", pulse-limits vTEST\n"), "{out}");
+        assert!(out.contains(&format!("  ok       pgrep: {}\n", s.bin().join("pgrep").display())), "{out}");
+        assert!(
+            out.contains(&format!(
+                "files\n  ok       lib: {}\n  PROBLEM  pulse-limits.1m.sh missing (run ./build.sh for bin/*)\n  PROBLEM  panel.html missing",
+                lib.display()
+            )),
+            "{out}"
+        );
+        if is_macos() {
+            assert!(out.contains("  PROBLEM  SwiftBar not running (open -a SwiftBar)\n"), "{out}");
+            assert!(out.contains(&format!("  PROBLEM  plugin not linked in {} (run: pulse-limits bar on)\n", plugin_dir().display())), "{out}");
+        }
+        assert!(
+            out.contains("providers\n  PROBLEM  none enabled: pulse-limits provider claude\n  ok       CLI running now: none (the menu bar follows the first enabled one that runs)\nplugin run\n  ok       menu bar shows: nothing\nactivity\n"),
+            "{out}"
+        );
+        assert!(out.ends_with(&format!("activity\n  ok       {}\n", json!({"tok_per_min": 0, "idle_s": 86400 * 365, "sessions": 0}))), "{out}");
+        // every file in place, the plugin linked, two providers enabled: one with a login and a live reply, one without
+        for f in [PLUGIN, "panel.html", "bin/pulse-limits", "bin/pulse-popover", "bin/pulse-menubar"] {
+            crate::util::write_atomic(&lib.join(f), b"x").unwrap();
+        }
+        let link = plugin_dir().join(PLUGIN);
+        std::fs::create_dir_all(plugin_dir()).unwrap();
+        std::os::unix::fs::symlink(lib.join(PLUGIN), &link).unwrap();
+        s.enable("grok codex");
+        let grok = s.home().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(grok.join("auth.json"), r#"{"https://auth.x.ai::c": {"key": "opaque-token", "expires_at": "2099-01-01T00:00:00Z"}}"#).unwrap();
+        std::fs::write(s.scratch.cache().join("plan-grok"), "SUPERGROK\n").unwrap(); // fresh: no settings lookup after the billing reply
+        std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", serve(200, GROK_REPLY));
+        let out = capture(|| {
+            run(&lib, "vTEST");
+        });
+        assert!(out.contains("  ok       pulse-limits.1m.sh\n  ok       panel.html\n  ok       bin/pulse-limits\n"), "{out}");
+        if is_macos() {
+            assert!(out.contains(&format!("  ok       plugin linked: {} -> {}\n", link.display(), lib.join(PLUGIN).display())), "{out}");
+        }
+        assert!(out.contains("  ok       enabled: grok codex  (first is the menu bar default; toggle with: pulse-limits provider NAME)\n"), "{out}");
+        assert!(out.contains("plugin run\n  ok       menu bar shows: grok\n  ok       grok: SUPERGROK WEEK 1%, fetched "), "{out}");
+        assert!(out.contains("  PROBLEM  codex: NO LOGIN  (NO CODEX LOGIN ON THIS "), "{out}");
+        assert!(out.contains("provider grok\n  ok       GROK_HOME="), "{out}");
+        assert!(out.contains("provider codex\n  ok       CODEX_HOME="), "{out}");
+        assert!(out.contains("  ok       reached through the plugin (not probed again: keep the calls rare)\n"), "{out}");
+        // the plugin file gone: a dangling link
+        std::fs::remove_file(lib.join(PLUGIN)).unwrap();
+        std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", refused());
+        let out = capture(|| {
+            run(&lib, "vTEST");
+        });
+        assert!(out.contains("  PROBLEM  pulse-limits.1m.sh missing"), "{out}");
+        if is_macos() {
+            assert!(out.contains(&format!("  PROBLEM  plugin link is dangling: {}\n", link.display())), "{out}");
+        }
+        drop(s);
+    }
+
+    #[test]
+    fn the_waybar_chain() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("doctor-waybar");
+        let lib = s.scratch.0.join("lib");
+        let out = capture(|| assert_eq!(run_on(&lib, "vTEST", false), 0));
+        assert!(out.contains(" pulse-limits vTEST\n"), "{out}");
+        assert!(out.contains(&format!("  ok       pgrep: {}\n", s.bin().join("pgrep").display())), "{out}");
+        assert!(out.contains("  PROBLEM  bin/pulse-limits missing"), "{out}");
+        assert!(!out.contains("bin/pulse-popover"), "{out}");
+        assert!(
+            out.contains(&format!(
+                "waybar\n  PROBLEM  waybar not running\n  PROBLEM  module file not written (run: pulse-limits bar on)\n  PROBLEM  no Waybar config at {}\n",
+                waybar_dir().display()
+            )),
+            "{out}"
+        );
+        // a config that does not include the module yet, then one that does, and the module file written
+        let cfg = waybar_dir().join("config");
+        crate::util::write_atomic(&cfg, b"{ \"modules-right\": [\"clock\"] }\n").unwrap();
+        let out = capture(|| {
+            run_on(&lib, "vTEST", false);
+        });
+        assert!(out.contains(&format!("  PROBLEM  {} does not include the module yet (pulse-limits bar on prints the two lines)\n", cfg.display())), "{out}");
+        let cfg = waybar_dir().join("config.jsonc");
+        crate::util::write_atomic(&cfg, b"{ \"include\": [\"pulse-limits.jsonc\"], \"modules-right\": [\"custom/pulse-limits\"] }\n").unwrap();
+        crate::util::write_atomic(&waybar_module(), b"{}").unwrap();
+        let out = capture(|| {
+            run_on(&lib, "vTEST", false);
+        });
+        assert!(out.contains(&format!("  ok       module file: {}\n  ok       {} includes the module\n", waybar_module().display(), cfg.display())), "{out}");
+        drop(s);
+    }
+}
