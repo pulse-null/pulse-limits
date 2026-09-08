@@ -37,7 +37,8 @@ in a terminal tile.
 curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash
 ```
 
-The script prints the two lines your Waybar config needs and the tones for `style.css`.
+It wires your Waybar config and `style.css` itself, keeping a `.pulse-limits.bak` of each;
+`pulse-limits bar off` puts them back.
 On NixOS with Home Manager nothing is edited by hand: add the flake input and this block,
 then rebuild. The module, its tones, the providers and the theme are declared there;
 `nixosModules.default` installs the command alone. The tones go on the end of
@@ -128,9 +129,6 @@ Plumbing, for scripts: `waybar`, `swiftbar`, `payload`, `activity`, `estimate PC
 - **Token expired**: open that CLI once; it refreshes its own token.
 - **Rate limited**: the usage endpoints have small per-account quotas, shared by every
   machine on the account; the binary backs off and keeps the last reading.
-- **Waybar (Linux)**: `bar on` edits `~/.config/waybar/config.jsonc` (or `config`) and
-  `style.css`, keeping a `.pulse-limits.bak` of each beside them, and `bar off` puts them
-  back; on NixOS the Home Manager module wires it instead.
 
 ## License
 

@@ -93,7 +93,7 @@ fn run_on(lib: &Path, version: &str, macos: bool) -> i32 {
             Ok(text) if text.contains("pulse-limits.jsonc") && text.contains("\"custom/pulse-limits\"") => {
                 ok(&format!("{} includes the module", cfg.display()))
             }
-            Ok(_) => bad(&format!("{} does not include the module yet (pulse-limits bar on prints the two lines)", cfg.display())),
+            Ok(_) => bad(&format!("{} does not include the module yet (pulse-limits bar on adds it)", cfg.display())),
             Err(_) => bad(&format!("no Waybar config at {}", waybar_dir().display())),
         }
     }
@@ -225,7 +225,7 @@ mod tests {
         let out = capture(|| {
             run_on(&lib, "vTEST", false);
         });
-        assert!(out.contains(&format!("  PROBLEM  {} does not include the module yet (pulse-limits bar on prints the two lines)\n", cfg.display())), "{out}");
+        assert!(out.contains(&format!("  PROBLEM  {} does not include the module yet (pulse-limits bar on adds it)\n", cfg.display())), "{out}");
         let cfg = waybar_dir().join("config.jsonc");
         crate::util::write_atomic(&cfg, b"{ \"include\": [\"pulse-limits.jsonc\"], \"modules-right\": [\"custom/pulse-limits\"] }\n").unwrap();
         crate::util::write_atomic(&waybar_module(), b"{}").unwrap();
