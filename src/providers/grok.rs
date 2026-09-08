@@ -280,17 +280,7 @@ pub fn windows(c: &Value, now: i64) -> Vec<Window> {
     if cap > 0.0 {
         out.push(Window { label: "ONDEMAND".into(), pct: clamp(&json!(money("onDemandUsed") / cap * 100.0)), resets: resets.clone() });
     }
-    let products: Vec<&Value> = cfg.get("productUsage").and_then(Value::as_array).map(|a| a.iter().filter(|p| p.is_object()).collect()).unwrap_or_default();
-    let zero = json!(0);
-    let aggregate = pct.as_f64().unwrap_or(0.0);
-    let usage = |p: &&Value| p.get("usagePercent").filter(|u| u.is_number()).unwrap_or(&zero).clone();
-    if products.len() > 1 || products.iter().any(|p| usage(p).as_f64().unwrap_or(0.0) != aggregate) {
-        for p in &products {
-            let name = p.get("product").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or("PRODUCT");
-            let short = name.strip_prefix("Grok").filter(|s| !s.is_empty()).unwrap_or(name);
-            out.push(Window { label: upper(short).chars().take(8).collect(), pct: clamp(&usage(p)), resets: resets.clone() });
-        }
-    }
+    // productUsage (Build, Chat, Imagine, Voice) is not shown: the pool is the meter, the rest is noise.
     out
 }
 
@@ -1055,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn monthly_ondemand_products_and_stamps() {
+    fn monthly_ondemand_and_stamps() {
         let c = v(r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_MONTHLY","start":"2026-09-01T00:00:00Z","end":"2026-10-01T00:00:00Z"},
             "creditUsagePercent":42.5,"onDemandCap":{"val":2000},"onDemandUsed":{"val":500},
             "productUsage":[{"product":"GrokBuild","usagePercent":40},{"product":"GrokVoice","usagePercent":2.5}],
@@ -1065,24 +1055,17 @@ mod tests {
             vec![
                 ("MONTH".into(), "42.5".into(), Some("2026-10-01T00:00:00Z".into())),
                 ("ONDEMAND".into(), "25.0".into(), Some("2026-10-01T00:00:00Z".into())),
-                ("BUILD".into(), "40".into(), Some("2026-10-01T00:00:00Z".into())),
-                ("VOICE".into(), "2.5".into(), Some("2026-10-01T00:00:00Z".into())),
             ]
         );
         assert_eq!(plan_of_reply(&c), "SUPERGROK HEAVY");
         assert_eq!(plan_of_reply(&v(r#"{"subscriptionTier":"SUPERGROK","config":{}}"#)), "SUPERGROK");
-        // one product that differs from the pool is shown; clamping at both ends, on-demand over its cap too
+        // products are not windows; clamping at both ends, on-demand over its cap too
         let c = v(r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-14T17:30:18Z"},
             "creditUsagePercent":120,"onDemandCap":{"val":100},"onDemandUsed":{"val":150},
             "productUsage":[{"product":"GrokBuild","usagePercent":-3}, "junk", {"usagePercent":7}]}}"#);
         assert_eq!(
             rows(&windows(&c, CAPTURED)),
-            vec![
-                ("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())),
-                ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())),
-                ("BUILD".into(), "0".into(), Some("2026-09-14T17:30:18Z".into())),
-                ("PRODUCT".into(), "7".into(), Some("2026-09-14T17:30:18Z".into()))
-            ]
+            vec![("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())), ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into()))]
         );
         // no type: the label from the span; both stamp forms parse to the same instant
         let c = v(r#"{"config":{"currentPeriod":{"start":"2026-09-07T17:30:18.071364+00:00","end":"2026-09-14T17:30:18Z"},"creditUsagePercent":5}}"#);

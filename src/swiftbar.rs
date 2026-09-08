@@ -205,7 +205,7 @@ PROVIDERS | font=Menlo size=12 trim=false color=#707070,#8C8C8C
 ---
 CLAUDE  ·  MAX 20X | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
 CLAUDE SESSION ███░░░░░░░░░░░░░░░░░  13%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
-CLAUDE WEEK    ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
+CLAUDE 7D      ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
 ---
 CODEX | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
 NO LOGIN | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C

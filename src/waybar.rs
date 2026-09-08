@@ -170,7 +170,7 @@ mod tests {
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", json!({ "tok_per_min": 0, "idle_s": 0, "sessions": 0 }));
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         let tip = v["tooltip"].as_str().unwrap();
-        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nCODEX WEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 1M"), "{tip}");
+        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nCODEX 7D       ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 1M"), "{tip}");
         assert!(!tip.contains("GROK"));
         let b = assemble(
             vec![mk("claude", "", "", vec![("SESSION", 17)]), mk("grok", "", "", vec![("WEEK", 90)])],
@@ -181,7 +181,7 @@ mod tests {
         );
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert!(v["tooltip"].as_str().unwrap().starts_with(
-            "PULSE LIMITS\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nGROK WEEK      ██████████████████░░  90%   RESETS IN ?\nUPDATED 1M"
+            "PULSE LIMITS\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nGROK 7D        ██████████████████░░  90%   RESETS IN ?\nUPDATED 1M"
         ));
         // a calibrated estimate moves the number the bar shows: the tooltip says so
         std::fs::create_dir_all(&projects).unwrap();
