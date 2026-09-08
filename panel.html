@@ -350,8 +350,8 @@
     const nr = Math.min(others.length, 4), r = nr > 3 ? 21 : 26, step = nr > 3 ? 90 : 112, top = BY + BH + 14;
     others.slice(0, nr).forEach((w, i) => {
       const cx = BX + r + 4 + i * step, cy = top + 12 + r, pct = Math.round(w.pct), pt = pctText(w), col = w.status ? C.dim : tone(pct);
-      if (w.prov) px(w.prov, cx - tw(w.prov, 1) / 2, top - 8, 1, C.dim);   // two lines: whose, then which window
-      px(w.word || w.label, cx - tw(w.word || w.label, 1) / 2, top, 1, C.dim);
+      if (!w.prov || tw(w.label, 1) <= step - 16) px(w.label, cx - tw(w.label, 1) / 2, top, 1, C.dim);   // one line, on the row the others use
+      else { px(w.prov, cx - tw(w.prov, 1) / 2, top - 8, 1, C.dim); px(w.word, cx - tw(w.word, 1) / 2, top, 1, C.dim); }   // too long: whose, then which window
       ring(cx, cy, r, pct, { track: C.track, color: col, width: 6 });
       const s = pt.length > 2 ? 1 : 2;
       px(pt, cx - tw(pt, s) / 2, cy - 3.5 * s, s, col);
@@ -563,8 +563,8 @@
         const cx = px0 + 8 + per / 2 + i * per, cy = 242, pct = Math.round(wd.pct);
         ring(cx, cy, r, pct, { track: '#2a0d3d', color: wd.status ? P.lav : i % 2 ? P.cyan : P.pink, width: 4, cap: 'round', glow: 8 });
         txt(pctText(wd), cx, cy + 5, (wide ? '700 13px ' : '700 11px ') + F, P.white, 'center');
-        if (wd.prov) txt(wd.prov, cx, cy - 41, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5);   // two lines: whose, then which window
-        txt(wd.word || wd.label, cx, cy - 32, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5);
+        if (!wd.prov || wd.label.length <= 10) txt(wd.label, cx, cy - 32, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5);   // one line, on the row the others use
+        else { txt(wd.prov, cx, cy - 41, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5); txt(wd.word, cx, cy - 32, '600 9px ' + F, P.lav, 'center', wide ? 2 : 0.5); }   // too long: whose, then which window
         txt(wd.status ? wd.status : span(resetMs(wd)), cx, cy + 40, '600 9px ' + F, wd.status ? '#ff4d4d' : P.lav, 'center', wide ? 1 : 0.5);
       });
     }
