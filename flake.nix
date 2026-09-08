@@ -30,7 +30,7 @@
           doCheck = false; # the unit tests bind local sockets; run `cargo test` in a checkout
           meta = with pkgs.lib; {
             description = "Claude, Codex and Grok plan limits as a retro patient monitor: a Waybar module, a terminal UI and a command";
-            homepage = "https://github.com/dnacenta/pulse-limits";
+            homepage = "https://github.com/pulse-null/pulse-limits";
             license = licenses.agpl3Plus;
             mainProgram = "pulse-limits";
             platforms = platforms.unix;

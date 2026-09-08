@@ -27,7 +27,7 @@ command, with the terminal monitor, and the bar item. The bar item is optional:
 ### macOS
 
 ```sh
-brew install dnacenta/tap/pulse-limits && pulse-limits install
+brew install pulse-null/tap/pulse-limits && pulse-limits install
 ```
 
 Homebrew builds the binary with its Rust toolchain; `pulse-limits install` adds SwiftBar
@@ -37,7 +37,7 @@ the Codex CLI or the Grok CLI. Update with `pulse-limits update`.
 ### Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash
 ```
 
 No prerequisites. The installer adds what is missing with your package manager (git, a
@@ -46,7 +46,7 @@ Rust with rustup when there is no cargo, the Nerd Font symbols when no Nerd Font
 installed, then clones into `~/.local/share/pulse-limits`, builds, links the command into
 `~/.local/bin` and writes the Waybar module. Debian, Ubuntu, Arch and derivatives,
 Fedora, openSUSE and Alpine are known to it; on a box with Nix it installs the flake
-instead (`nix profile install github:dnacenta/pulse-limits` by hand does the same).
+instead (`nix profile install github:pulse-null/pulse-limits` by hand does the same).
 `PULSE_LIMITS_NO_SUDO=1` makes it only tell you what to install. Update with
 `pulse-limits update`.
 
@@ -64,7 +64,7 @@ colour in `style.css`. Click opens the monitor in the browser. The same binary, 
 and paths serve every distro; Omarchy 4 replaced Waybar with its own bar, so the module
 targets Omarchy 3, Hyprland and Sway setups on Waybar.
 
-By hand, on either platform: `git clone https://github.com/dnacenta/pulse-limits.git && cd pulse-limits && ./build.sh && ./bin/pulse-limits install` (needs cargo).
+By hand, on either platform: `git clone https://github.com/pulse-null/pulse-limits.git && cd pulse-limits && ./build.sh && ./bin/pulse-limits install` (needs cargo).
 
 ## Providers
 

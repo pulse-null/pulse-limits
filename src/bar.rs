@@ -236,7 +236,7 @@ pub fn update(lib: &Path, version: &str) -> i32 {
         return 1;
     } else if lib_s.contains("/Cellar/pulse-limits/") || lib_s.contains("/opt/pulse-limits/") {
         println!("installed with Homebrew: upgrading");
-        if !std::process::Command::new("brew").args(["upgrade", "dnacenta/tap/pulse-limits"]).status().map(|s| s.success()).unwrap_or(false) {
+        if !std::process::Command::new("brew").args(["upgrade", "pulse-null/tap/pulse-limits"]).status().map(|s| s.success()).unwrap_or(false) {
             eprintln!("brew upgrade failed");
             return 1;
         }
@@ -252,7 +252,7 @@ pub fn update(lib: &Path, version: &str) -> i32 {
         }
     } else {
         eprintln!("installed by copying the folder: re-run the installer");
-        eprintln!("  curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash");
+        eprintln!("  curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash");
         return 1;
     }
     kill_popover();

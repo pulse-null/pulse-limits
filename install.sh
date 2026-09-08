@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PulseLimits installer: one command, no prerequisites. Safe to re-run; it updates in place.
 #
-#   curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash
 #   ./install.sh                # from a checkout: installs that checkout
 #   ./install.sh --uninstall
 #
@@ -11,14 +11,14 @@
 # updates) the repo into ~/.local/share/pulse-limits, builds, links the command into
 # ~/.local/bin and writes the Waybar module (`pulse-limits bar on`). On a box with Nix it
 # just installs the flake. macOS: Homebrew is the package (`brew install
-# dnacenta/tap/pulse-limits && pulse-limits install`); this script is the git route there,
+# pulse-null/tap/pulse-limits && pulse-limits install`); this script is the git route there,
 # and bootstraps rustup and SwiftBar the same way.
 # Env: PULSE_LIMITS_DIR (where to clone, default ~/.local/share/pulse-limits),
-#      PULSE_LIMITS_REPO (git URL, default https://github.com/dnacenta/pulse-limits.git),
+#      PULSE_LIMITS_REPO (git URL, default https://github.com/pulse-null/pulse-limits.git),
 #      PULSE_LIMITS_NO_SUDO=1 (never call sudo: report what is missing instead).
 set -euo pipefail
 
-REPO="${PULSE_LIMITS_REPO:-https://github.com/dnacenta/pulse-limits.git}"
+REPO="${PULSE_LIMITS_REPO:-https://github.com/pulse-null/pulse-limits.git}"
 PLUGIN="pulse-limits.1m.sh"
 OLD_PLUGIN="pulse-limits.5m.sh"
 PLUGIN_DIR_DEFAULT="$HOME/.config/swiftbar/plugins"
@@ -136,7 +136,7 @@ mac_prereqs() {
 # --- Nix: the flake is the package; nothing else is needed -------------------------------
 if [[ "$OS" != "Darwin" ]] && have nix && ! have cargo; then
   say "Nix found: installing the flake"
-  nix --extra-experimental-features 'nix-command flakes' profile install "github:dnacenta/pulse-limits"
+  nix --extra-experimental-features 'nix-command flakes' profile install "github:pulse-null/pulse-limits"
   ensure_nerd_font
   pulse-limits bar on
   say "Installed. Add the module to your Waybar config as printed above, then: pulse-limits refresh"
