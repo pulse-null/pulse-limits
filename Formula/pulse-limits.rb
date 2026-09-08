@@ -6,14 +6,16 @@ class PulseLimits < Formula
   license "AGPL-3.0-or-later"
 
   depends_on "jq"
+  depends_on "rust" => :build
   depends_on :macos
 
   def install
     # Homebrew already requires the Command Line Tools, which ship swiftc.
     system "swiftc", "-O", "popover/PulsePopover.swift", "-o", "pulse-popover"
     system "swiftc", "-O", "menubar/MenuBarImage.swift", "-o", "pulse-menubar"
+    system "cargo", "build", "--release", "--manifest-path", "tui/Cargo.toml"
     libexec.install "pulse-limits.1m.sh", "pulse-limits.5m.sh", "open-monitor.sh", "panel.html", "build.sh"
-    (libexec/"bin").install "pulse-popover", "pulse-menubar"
+    (libexec/"bin").install "pulse-popover", "pulse-menubar", "tui/target/release/pulse-tui"
     bin.install "pulse-limits"
   end
 
