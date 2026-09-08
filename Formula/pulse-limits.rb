@@ -2,7 +2,7 @@ class PulseLimits < Formula
   desc "Claude, Codex and Grok plan limits, as a retro patient monitor (SwiftBar)"
   homepage "https://github.com/dnacenta/pulse-limits"
   url "https://github.com/dnacenta/pulse-limits/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000" # set at release: shasum -a 256 v0.5.0.tar.gz
+  sha256 "10209bd144b24fb5947c5ec800d689ae40e6b15ca797c904898617ade2082dd3"
   license "AGPL-3.0-or-later"
 
   depends_on "rust" => :build
