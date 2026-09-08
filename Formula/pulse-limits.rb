@@ -12,7 +12,7 @@ class PulseLimits < Formula
     # Homebrew already requires the Command Line Tools, which ship swiftc.
     system "swiftc", "-O", "popover/PulsePopover.swift", "-o", "pulse-popover"
     system "swiftc", "-O", "menubar/MenuBarImage.swift", "-o", "pulse-menubar"
-    libexec.install "pulse-limits.1m.sh", "pulse-limits.5m.sh", "open-monitor.sh", "panel.html", "build.sh"
+    libexec.install "pulse-limits.1m.sh", "pulse-limits.5m.sh", "open-monitor.sh", "panel.html", "build.sh", "providers"
     (libexec/"bin").install "pulse-popover", "pulse-menubar"
     bin.install "pulse-limits"
   end
