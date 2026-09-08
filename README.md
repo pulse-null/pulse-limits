@@ -37,7 +37,8 @@ in a terminal tile.
 curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash
 ```
 
-The script prints the two lines your Waybar config needs and the tones for `style.css`.
+It wires your Waybar config and `style.css` itself, keeping a `.pulse-limits.bak` of each;
+`pulse-limits bar off` puts them back.
 On NixOS with Home Manager nothing is edited by hand: add the flake input and this block,
 then rebuild. The module, its tones, the providers and the theme are declared there;
 `nixosModules.default` installs the command alone. The tones go on the end of
