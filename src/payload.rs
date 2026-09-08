@@ -70,23 +70,45 @@ pub fn build(min_interval: i64, write_url: bool, extra: Option<&str>) -> Built {
         Some(e) => e.to_string(),
         None => active_of(&enabled),
     };
-    let b = assemble(docs, enabled, &active, &theme(), activity::measure().to_json());
+    let mut readings = serde_json::Map::new();
+    for p in &names {
+        readings.insert(p.clone(), activity::measure_for(p).map(|a| a.to_json()).unwrap_or(Value::Null));
+    }
+    let b = assemble(docs, enabled, &active, &theme(), Value::Object(readings));
     if write_url {
         let _ = write_atomic(&cache_dir().join("panel.url"), b.panel_url(&lib_dir()).as_bytes());
     }
     b
 }
 
+/// `activity` is one reading, `{tok_per_min, idle_s, sessions}`, taken as the active provider's
+/// (what the scripts and the TUI pass), or one per provider name, null where a provider has no
+/// local source. The active one goes on top as before; each provider's into its providers[] entry.
 pub fn assemble(docs: Vec<Doc>, enabled: Vec<String>, active: &str, theme: &str, activity: Value) -> Built {
     let a = docs.iter().find(|d| d.provider == active).cloned().unwrap_or_else(Doc::none);
+    let flat = activity.get("tok_per_min").is_some();
+    let activity_of = |name: &str| match (flat, name == active) {
+        (true, true) => activity.clone(),
+        (true, false) => Value::Null,
+        (false, _) => activity.get(name).cloned().unwrap_or(Value::Null),
+    };
+    let providers: Vec<Value> = docs
+        .iter()
+        .filter(|d| enabled.contains(&d.provider) || d.provider == active)
+        .map(|d| {
+            let mut s = d.summary();
+            s["activity"] = activity_of(&d.provider);
+            s
+        })
+        .collect();
     let mut payload = json!({
         "provider": a.provider, "plan": a.plan, "source": a.source, "theme": theme, "fetched": a.fetched,
         "history": a.history.iter().map(|(t, p)| json!([t, p])).collect::<Vec<_>>(),
-        "activity": activity,
+        "activity": activity_of(active),
         "status": a.status, "hint": a.hint,
         "windows": a.windows.iter().map(|w| w.to_json()).collect::<Vec<_>>(),
         "credits": a.credits,
-        "providers": docs.iter().filter(|d| enabled.contains(&d.provider) || d.provider == active).map(Doc::summary).collect::<Vec<_>>(),
+        "providers": providers,
     });
     let have_data = !a.windows.is_empty();
     let session = a.session().map(|w| w.pct.clone());
@@ -138,6 +160,12 @@ mod tests {
         );
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 2);
         assert_eq!(b.payload["providers"][1]["name"], "codex");
+        // one flat reading: the active provider's, on top and in its entry, null for the other
+        let pkeys: Vec<&str> = b.payload["providers"][0].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(pkeys, ["name", "plan", "status", "hint", "fetched", "windows", "activity"]);
+        assert_eq!(b.payload["activity"]["idle_s"], 5);
+        assert_eq!(b.payload["providers"][0]["activity"]["idle_s"], 5);
+        assert!(b.payload["providers"][1]["activity"].is_null());
         assert_eq!(b.payload["providers"][1]["windows"][0]["pct"].to_string(), "17.0");
         assert_eq!(b.payload["estimate"]["pct_api"].to_string(), "13");
         assert_eq!(b.payload["estimate"]["calibrated"], false);
@@ -156,6 +184,38 @@ mod tests {
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         assert_eq!((b.str("status").as_str(), b.have_data, b.s_pct), ("NO PROVIDER SELECTED", false, 0));
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 0);
+        std::env::remove_var("CLAUDE_PROJECTS_DIR");
+    }
+
+    #[test]
+    fn activity_per_provider_or_flat() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("payload-activity");
+        std::env::set_var("CLAUDE_PROJECTS_DIR", s.0.join("none"));
+        let docs = || vec![doc("claude", vec![("SESSION", json!(13))]), doc("codex", vec![("SESSION", json!(17))])];
+        let enabled = || vec!["claude".to_string(), "codex".to_string()];
+        let claude = json!({"tok_per_min": 300, "idle_s": 4, "sessions": 1});
+        let keyed = json!({"claude": claude.clone(), "codex": null});
+        // keyed: the active provider's on top, each one's in its entry, null for one without a source
+        let b = assemble(docs(), enabled(), "claude", "crt", keyed.clone());
+        assert_eq!(b.payload["activity"], claude);
+        assert_eq!(b.payload["providers"][0]["activity"], claude);
+        assert!(b.payload["providers"][1]["activity"].is_null());
+        let b = assemble(docs(), enabled(), "codex", "crt", keyed);
+        assert!(b.payload["activity"].is_null());
+        assert_eq!(b.payload["providers"][0]["activity"], claude);
+        // a provider the keyed object does not name
+        let b = assemble(docs(), enabled(), "codex", "crt", json!({"claude": claude.clone()}));
+        assert!(b.payload["activity"].is_null());
+        assert!(b.payload["providers"][1]["activity"].is_null());
+        // flat: the active's, whichever it is; null: nothing anywhere
+        let b = assemble(docs(), enabled(), "codex", "crt", claude.clone());
+        assert_eq!(b.payload["activity"], claude);
+        assert!(b.payload["providers"][0]["activity"].is_null());
+        assert_eq!(b.payload["providers"][1]["activity"], claude);
+        let b = assemble(docs(), enabled(), "claude", "crt", Value::Null);
+        assert!(b.payload["activity"].is_null());
+        assert!(b.payload["providers"][0]["activity"].is_null());
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }
 
@@ -188,13 +248,22 @@ mod tests {
         assert_eq!((b.active.as_str(), b.str("provider").as_str(), b.str("status").as_str(), b.theme.as_str()), ("codex", "codex", "NO LOGIN", "crt"));
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 2);
         assert_eq!(b.payload["providers"][1]["name"], "grok");
-        assert_eq!(b.payload["activity"]["sessions"], 0);
+        // codex keeps no session logs in this home: no reading on top, none in its entry
+        assert!(b.payload["activity"].is_null());
+        assert!(b.payload["providers"][0]["activity"].is_null());
         assert_eq!(active_of(&b.enabled), "codex");
+        // its sessions dir appears: measured; still nothing for grok
+        std::fs::create_dir_all(s.home().join(".codex").join("sessions")).unwrap();
+        let b = build(PANEL_INTERVAL, false, None);
+        assert_eq!(b.payload["activity"]["sessions"], 0);
+        assert_eq!(b.payload["providers"][0]["activity"]["idle_s"], 86_400 * 365);
+        assert!(b.payload["providers"][1]["activity"].is_null());
         assert_eq!(active_of(&[]), "");
         // a provider named that is not enabled: asked too, shown, and listed in providers[]
         let b = build(PANEL_INTERVAL, false, Some("claude"));
         assert_eq!((b.active.as_str(), b.docs.len(), b.active_doc().provider.as_str()), ("claude", 3, "claude"));
         assert_eq!(b.payload["providers"].as_array().unwrap().len(), 3);
+        assert!(b.payload["providers"][2]["activity"].is_null(), "no projects dir in this home");
         // a named one that is enabled is not asked twice
         let b = build(PANEL_INTERVAL, false, Some("grok"));
         assert_eq!((b.active.as_str(), b.docs.len()), ("grok", 2));

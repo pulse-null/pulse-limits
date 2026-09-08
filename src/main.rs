@@ -46,7 +46,7 @@ const HELP: &str = "pulse-limits: your Claude and Codex plan limits as a retro p
   pulse-limits waybar        print one Waybar JSON line (what the Waybar module runs)
   pulse-limits swiftbar      print the SwiftBar menu (what the SwiftBar shim runs)
   pulse-limits payload       print the document the panel reads, refreshing it (the popover runs this)
-  pulse-limits activity      what Claude Code is doing now, from its transcripts, as JSON
+  pulse-limits activity [NAME]  what a CLI is doing now, from its session logs, as JSON (default claude)
   pulse-limits estimate PCT FETCHED  the dead-reckoned session % from a reading, as JSON
   pulse-limits reset         drop the cached readings so the next run asks live";
 
@@ -131,10 +131,17 @@ fn dispatch(lib: &Path, args: &[String]) -> i32 {
             println!("{}", waybar::render(&b));
             0
         }
-        "activity" => {
-            println!("{}", activity::measure().to_json());
-            0
-        }
+        "activity" => match arg.map(String::as_str) {
+            Some(p) if !providers::known(p) => {
+                eprintln!("unknown provider: {p} (one of: {})", providers::KNOWN.join(" "));
+                64
+            }
+            p => {
+                // zeros and a year idle when the CLI keeps no logs here, as the Claude reading always printed
+                println!("{}", activity::measure_for(p.unwrap_or("claude")).unwrap_or_default().to_json());
+                0
+            }
+        },
         "estimate" => match (args.get(1).and_then(|p| p.parse::<f64>().ok()), args.get(2).and_then(|f| f.parse::<i64>().ok())) {
             (Some(pct), Some(fetched)) => {
                 // "13" stays 13 in the output, as the Swift helper printed it
@@ -297,6 +304,13 @@ mod tests {
         for cmd in ["status", "payload", "swiftbar", "waybar", "activity"] {
             assert_eq!(run(&s, &[cmd]), 0, "{cmd}");
         }
+        // activity by provider, with or without its logs; a name that is not a provider is a usage error
+        for p in ["claude", "grok", "codex"] {
+            assert_eq!(run(&s, &["activity", p]), 0, "{p}");
+        }
+        std::fs::create_dir_all(s.home().join(".grok").join("sessions")).unwrap();
+        assert_eq!(run(&s, &["activity", "grok"]), 0);
+        assert_eq!(run(&s, &["activity", "gemini"]), 64);
         assert!(cache.join("panel.url").is_file());
         // grok enabled with a login: status fetches from the local server, raw then shows the cached reply
         s.enable("grok");
