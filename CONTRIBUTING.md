@@ -4,19 +4,13 @@ One maintainer, spare time. Issues and pull requests get read; replies can take 
 Small, focused changes land. Anything larger needs an issue first. Be civil; that is the
 whole code of conduct.
 
-## What is welcome
-
-In this order: new providers, fixes with a fixture that reproduces the bug, packaging
-(Homebrew, Nix, Waybar, the installer), README fixes.
-
-Not welcome: anything in Python, anything that needs a daemon, an account or a server,
-and new dependencies without a stated reason.
+## Before you start
 
 Open an issue before you start, even for small things. It prevents duplicate work and
 lets me say no before you spend a weekend. Typos can skip this. Then branch from `main`
 as `feat/<name>` or `fix/<name>` and open a pull request.
 
-## The rules that are not negotiable
+## Ground rules
 
 1. Tokens come from the vendor CLI's own credential store. Never refreshed, never
    written, never printed. `doctor` stays token-free.
@@ -27,11 +21,9 @@ as `feat/<name>` or `fix/<name>` and open a pull request.
 4. Quotas are tiny: Anthropic's endpoint refused a second call within a minute. Tests use
    fixtures and the local test server, never the live API. Probe live rarely and on
    purpose, and say in the pull request how many calls you made.
-5. No Python. Rust; shell only for the SwiftBar shims and the installer; Swift only where
-   AppKit forces it; HTML and JS for the monitor page.
-6. Fail loudly. `READER FAILED` on screen beats a plausible wrong number.
+5. Fail loudly. `READER FAILED` on screen beats a plausible wrong number.
 
-A pull request that breaks one of these is closed, not reviewed.
+A pull request that crosses one of these gets a note asking for the change before review.
 
 ## Setup and checks
 
@@ -131,9 +123,6 @@ providers, account ids, so look before pasting. It calls the API only when the l
 already failed. If a number is wrong, add `pulse-limits raw <provider>`, the last API
 reply, with identifiers redacted; that is what I need to see.
 
-Feature requests go in an issue too. Issue #3, Claude Code's status line feed, is the
-shape I like: what to read, from where, and what it saves.
-
 ## Security
 
 A way to leak, write or misuse a credential is not an issue for the tracker. See
@@ -141,18 +130,8 @@ A way to leak, write or misuse a credential is not an issue for the tracker. See
 
 ## Releases
 
-Maintainer only, written down so it happens the same way every time.
-
-1. Bump `version` in `Cargo.toml` and `<swiftbar.version>` in `pulse-limits.1m.sh` and
-   `pulse-limits.5m.sh`; run the four checks; commit `chore(release): X.Y.Z`.
-2. Tag `vX.Y.Z` once and push, then `gh release create vX.Y.Z --generate-notes` so the
-   release badge and the Releases page follow. Never move a tag: GitHub caches the
-   archive per tag name and the Homebrew checksum would then match the wrong commit. Cut
-   a new tag instead.
-3. Download the tag tarball, check that its embedded commit is the tag's, and put its
-   `sha256` in `Formula/pulse-limits.rb`; commit `chore(formula): sha256 for vX.Y.Z`.
-4. Copy the formula into `pulse-null/homebrew-tap` and push; `brew fetch --force
-   pulse-null/tap/pulse-limits` must be clean.
+The maintainer cuts releases, version bumps included. A pull request never changes the
+version, a tag or the formula.
 
 ## License
 
