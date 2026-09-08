@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# pulse-limits: manage the PulseLimits SwiftBar plugin from the terminal.
+# pulse-limits: manage the PulseLimits bar item from the terminal.
 #
-#   pulse-limits install       link the plugin into SwiftBar and start it
-#   pulse-limits uninstall     unlink it, drop cache and settings
+#   pulse-limits install       set up the bar item (SwiftBar on macOS, Waybar on Linux) and start it
+#   pulse-limits uninstall     remove the bar item, drop cache and settings
 #   pulse-limits theme NAME    crt | modern | cyber | synth | analog
 #   pulse-limits refresh       force a live fetch now
 #   pulse-limits open          show or hide the monitor
@@ -11,47 +11,55 @@
 #   pulse-limits version       print the installed version
 #   pulse-limits doctor        check every step of the chain (paste this when asking for help)
 #   pulse-limits raw           print the last raw usage reply from the API (no secrets in it)
-#   pulse-limits keychain NAME pin the Keychain entry that holds the claude.ai login (see doctor)
+#   pulse-limits keychain NAME pin the Keychain entry that holds the claude.ai login (macOS; see doctor)
+#   pulse-limits waybar        print one Waybar JSON line (what the Waybar module runs)
+#   pulse-limits bar on|off|status  the bar item alone: link it, unlink it, or say whether it is
 #
-# Works from a git checkout (this file next to pulse-limits.1m.sh) and from a
-# Homebrew install (bin/pulse-limits with the plugin under opt/pulse-limits/libexec,
-# a path that stays valid across `brew upgrade`).
+# Works from a git checkout (this file next to pulse-limits.1m.sh) or a symlink to one, from a
+# Homebrew install (bin/pulse-limits with the plugin under opt/pulse-limits/libexec, a path
+# that stays valid across `brew upgrade`), and from the Nix package (bin/ next to libexec/).
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+OS=$(uname -s)
+if [[ "$OS" == "Darwin" ]]; then export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+else export PATH="${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin"; fi
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+REAL=$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")
 if   [[ -f "$HERE/pulse-limits.1m.sh" ]]; then LIB="$HERE"
 elif [[ -f "$HERE/../opt/pulse-limits/libexec/pulse-limits.1m.sh" ]]; then LIB=$(cd "$HERE/../opt/pulse-limits/libexec" && pwd)
-else
-  REAL=$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")
-  [[ -f "$REAL/../libexec/pulse-limits.1m.sh" ]] && LIB=$(cd "$REAL/../libexec" && pwd) || { echo "pulse-limits: cannot find pulse-limits.1m.sh" >&2; exit 1; }
+elif [[ -f "$REAL/pulse-limits.1m.sh" ]]; then LIB=$(cd "$REAL" && pwd)
+elif [[ -f "$REAL/../libexec/pulse-limits.1m.sh" ]]; then LIB=$(cd "$REAL/../libexec" && pwd)
+else echo "pulse-limits: cannot find pulse-limits.1m.sh" >&2; exit 1
 fi
 PLUGIN="pulse-limits.1m.sh"
 OLD_PLUGIN="pulse-limits.5m.sh"   # pre-0.4 installs linked this name
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pulse-limits"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pulse-limits"
+WAYBAR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
+WAYBAR_MODULE="$WAYBAR_DIR/pulse-limits.jsonc"   # Linux: written by `bar on`, included from the user's own config
 plugin_dir() { local d; d=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true); printf '%s' "${d:-$HOME/.config/swiftbar/plugins}"; }
-refresh() { open "swiftbar://refreshallplugins" 2>/dev/null || true; }
+refresh() { # ask the bar to run the plugin again
+  if [[ "$OS" == "Darwin" ]]; then open "swiftbar://refreshallplugins" 2>/dev/null || true
+  else pkill -RTMIN+8 waybar 2>/dev/null || true; fi
+}
+darwin_only() { [[ "$OS" == "Darwin" ]] || { echo "pulse-limits $1: macOS only" >&2; exit 64; }; }
 
 case "${1:-help}" in
   install)
-    [[ -d /Applications/SwiftBar.app ]] || { echo "SwiftBar is not installed:  brew install --cask swiftbar" >&2; exit 1; }
-    command -v jq >/dev/null || { echo "jq is not installed:  brew install jq" >&2; exit 1; }
-    [[ -x "$LIB/bin/pulse-popover" && -x "$LIB/bin/pulse-menubar" ]] || (cd "$LIB" && ./build.sh)
-    d=$(plugin_dir); mkdir -p "$d"
-    defaults write com.ameba.SwiftBar PluginDirectory "$d"
-    rm -f "$d/$OLD_PLUGIN"
-    ln -sfn "$LIB/$PLUGIN" "$d/$PLUGIN"
-    security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
-      || echo "warning: no Claude Code login in the Keychain. Run 'claude' once and log in; the widget reads that token." >&2
-    pkill -f bin/pulse-popover 2>/dev/null || true
-    if pgrep -xq SwiftBar; then refresh; else open -a SwiftBar; fi
-    echo "linked $d/$PLUGIN -> $LIB/$PLUGIN"
-    echo "Look for the ring at the right of the menu bar. Left-click opens the monitor, right-click picks a theme." ;;
+    if [[ "$OS" == "Darwin" ]]; then
+      [[ -d /Applications/SwiftBar.app ]] || { echo "SwiftBar is not installed:  brew install --cask swiftbar" >&2; exit 1; }
+      command -v jq >/dev/null || { echo "jq is not installed:  brew install jq" >&2; exit 1; }
+      [[ -x "$LIB/bin/pulse-popover" && -x "$LIB/bin/pulse-menubar" ]] || (cd "$LIB" && ./build.sh)
+      security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
+        || echo "warning: no Claude Code login in the Keychain. Run 'claude' once and log in; the widget reads that token." >&2
+    else
+      for tool in jq curl python3; do command -v "$tool" >/dev/null || { echo "$tool is not installed" >&2; exit 1; }; done
+    fi
+    "$0" bar on ;;
   uninstall)
-    pkill -f bin/pulse-popover 2>/dev/null || true
-    rm -f "$(plugin_dir)/$PLUGIN" "$(plugin_dir)/$OLD_PLUGIN"; rm -rf "$CACHE_DIR" "$CONFIG_DIR"; refresh
-    echo "unlinked. SwiftBar itself is untouched." ;;
+    "$0" bar off
+    rm -rf "$CACHE_DIR" "$CONFIG_DIR"
+    echo "cache and settings removed." ;;
   theme)   "$LIB/$PLUGIN" --theme "${2:-}" && refresh && echo "theme: ${2}" ;;
   refresh) "$LIB/$PLUGIN" --reset; refresh; echo "refreshing" ;;
   open)    exec "$LIB/open-monitor.sh" ;;
@@ -59,49 +67,75 @@ case "${1:-help}" in
   doctor)
     ok() { printf '  ok       %s\n' "$*"; }; bad() { printf '  PROBLEM  %s\n' "$*"; }
     echo "PulseLimits doctor  ($(date '+%Y-%m-%d %H:%M'))"
-    echo "system"; ok "macOS $(sw_vers -productVersion) $(uname -m), bash $BASH_VERSION"
-    readlink -f / >/dev/null 2>&1 && ok "readlink -f works" || bad "readlink -f unsupported (macOS older than 12.3): symlinked plugin will not find its files"
-    for tool in jq curl security; do command -v "$tool" >/dev/null && ok "$tool: $(command -v "$tool")" || bad "$tool is missing"; done
+    echo "system"
+    if [[ "$OS" == "Darwin" ]]; then
+      ok "macOS $(sw_vers -productVersion) $(uname -m), bash $BASH_VERSION"
+      readlink -f / >/dev/null 2>&1 && ok "readlink -f works" || bad "readlink -f unsupported (macOS older than 12.3): symlinked plugin will not find its files"
+      tools="jq curl security"; files="pulse-limits.1m.sh open-monitor.sh panel.html bin/pulse-popover bin/pulse-menubar"
+    else
+      ok "$(uname -sr) $(uname -m), bash $BASH_VERSION"
+      tools="jq curl python3 xdg-open"; files="pulse-limits.1m.sh open-monitor.sh panel.html bin/pulse-activity.py"
+    fi
+    for tool in $tools; do command -v "$tool" >/dev/null && ok "$tool: $(command -v "$tool")" || bad "$tool is missing"; done
     echo "files"; ok "lib: $LIB"
-    for f in pulse-limits.1m.sh open-monitor.sh panel.html bin/pulse-popover bin/pulse-menubar; do [[ -e "$LIB/$f" ]] && ok "$f" || bad "$f missing (run ./build.sh for bin/*)"; done
-    echo "swiftbar"
-    [[ -d /Applications/SwiftBar.app ]] && ok "SwiftBar $(defaults read /Applications/SwiftBar.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null) installed" || bad "SwiftBar not in /Applications"
-    pgrep -xq SwiftBar && ok "SwiftBar running" || bad "SwiftBar not running (open -a SwiftBar)"
-    link="$(plugin_dir)/$PLUGIN"
-    if [[ -L "$link" ]]; then [[ -e "$link" ]] && ok "plugin linked: $link -> $(readlink "$link")" || bad "plugin link is dangling: $link"; else bad "plugin not linked in $(plugin_dir) (run: pulse-limits install)"; fi
+    for f in $files; do [[ -e "$LIB/$f" ]] && ok "$f" || bad "$f missing (run ./build.sh for bin/pulse-*)"; done
+    if [[ "$OS" == "Darwin" ]]; then
+      echo "swiftbar"
+      [[ -d /Applications/SwiftBar.app ]] && ok "SwiftBar $(defaults read /Applications/SwiftBar.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null) installed" || bad "SwiftBar not in /Applications"
+      pgrep -xq SwiftBar && ok "SwiftBar running" || bad "SwiftBar not running (open -a SwiftBar)"
+      link="$(plugin_dir)/$PLUGIN"
+      if [[ -L "$link" ]]; then [[ -e "$link" ]] && ok "plugin linked: $link -> $(readlink "$link")" || bad "plugin link is dangling: $link"; else bad "plugin not linked in $(plugin_dir) (run: pulse-limits bar on)"; fi
+    else
+      echo "waybar"
+      pgrep -x waybar >/dev/null && ok "waybar running" || bad "waybar not running"
+      [[ -f "$WAYBAR_MODULE" ]] && ok "module file: $WAYBAR_MODULE" || bad "module file not written (run: pulse-limits bar on)"
+      cfg="$WAYBAR_DIR/config.jsonc"; [[ -f "$cfg" ]] || cfg="$WAYBAR_DIR/config"
+      if [[ -f "$cfg" ]]; then
+        grep -q 'pulse-limits.jsonc' "$cfg" && grep -q '"custom/pulse-limits"' "$cfg" && ok "$cfg includes the module" || bad "$cfg does not include the module yet (pulse-limits bar on prints the two lines)"
+      else bad "no Waybar config at $WAYBAR_DIR"; fi
+    fi
     echo "credentials"
-    [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && ok "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR in this shell (SwiftBar does not see shell variables)"
-    pin=$(cat "$CONFIG_DIR/keychain" 2>/dev/null || true); [[ -n "$pin" ]] && ok "pinned Keychain service: $pin"
-    tok=""; seen=" "; nitems=0
-    while IFS=$'\t' read -r svc acct mdat; do
-      [[ -n "$svc" && "$seen" != *"|$svc/$acct|"* ]] || continue; seen="$seen|$svc/$acct| "; nitems=$((nitems + 1))
-      if [[ -n "$acct" ]]; then json=$(security find-generic-password -s "$svc" -a "$acct" -w 2>/dev/null); else json=$(security find-generic-password -s "$svc" -w 2>/dev/null); fi
-      if [[ -n "$json" ]]; then
-        if printf '%s' "$json" | jq -e '(.claudeAiOauth.accessToken // "") != ""' >/dev/null 2>&1; then
-          ok "Keychain '$svc' / account '$acct'${mdat:+ (modified $mdat)}: claude.ai login, $(printf '%s' "$json" | jq -r '.claudeAiOauth | "plan \(.subscriptionType // "?"), tier \(.rateLimitTier // "?"), expires \(if .expiresAt then (.expiresAt/1000|todate) else "?" end)"')"
-          [[ -n "$tok" ]] || tok=$(printf '%s' "$json" | jq -r '.claudeAiOauth.accessToken')
-        else bad "Keychain '$svc' / account '$acct'${mdat:+ (modified $mdat)}: no claude.ai login in it (keys: $(printf '%s' "$json" | jq -r 'if type == "object" then keys | join(",") else "not JSON, \(length) chars" end' 2>/dev/null))"; fi
-      else bad "Keychain '$svc' / account '$acct': listed but not readable from here"; fi
-    done < <({ [[ -n "$pin" ]] && printf '%s\t\t\n' "$pin"
-               items=$(security dump-keychain 2>/dev/null | awk -F'"' '
-                 /^keychain:/ { svc = ""; acct = ""; labl = ""; mdat = "" }
-                 /"acct"<blob>=/ { acct = $4 }
-                 /"labl"<blob>=/ { labl = $4 }
-                 /"mdat"<timedate>=/ { mdat = substr($4, 1, 15) }
-                 /"svce"<blob>=/ { svc = $4; if (tolower(svc) ~ /claude/ || tolower(labl) ~ /claude/) print svc "\t" acct "\t" mdat }')
-               if [[ -n "$items" ]]; then printf '%s\n' "$items"; else printf 'Claude Code-credentials\t\t\n'; fi; })
-    ok "$nitems Keychain item(s) mention Claude"
+    [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && ok "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR in this shell (the bar does not see shell variables)"
+    tok=""
+    if [[ "$OS" == "Darwin" ]]; then
+      pin=$(cat "$CONFIG_DIR/keychain" 2>/dev/null || true); [[ -n "$pin" ]] && ok "pinned Keychain service: $pin"
+      seen=" "; nitems=0
+      while IFS=$'\t' read -r svc acct mdat; do
+        [[ -n "$svc" && "$seen" != *"|$svc/$acct|"* ]] || continue; seen="$seen|$svc/$acct| "; nitems=$((nitems + 1))
+        if [[ -n "$acct" ]]; then json=$(security find-generic-password -s "$svc" -a "$acct" -w 2>/dev/null); else json=$(security find-generic-password -s "$svc" -w 2>/dev/null); fi
+        if [[ -n "$json" ]]; then
+          if printf '%s' "$json" | jq -e '(.claudeAiOauth.accessToken // "") != ""' >/dev/null 2>&1; then
+            ok "Keychain '$svc' / account '$acct'${mdat:+ (modified $mdat)}: claude.ai login, $(printf '%s' "$json" | jq -r '.claudeAiOauth | "plan \(.subscriptionType // "?"), tier \(.rateLimitTier // "?"), expires \(if .expiresAt then (.expiresAt/1000|todate) else "?" end)"')"
+            [[ -n "$tok" ]] || tok=$(printf '%s' "$json" | jq -r '.claudeAiOauth.accessToken')
+          else bad "Keychain '$svc' / account '$acct'${mdat:+ (modified $mdat)}: no claude.ai login in it (keys: $(printf '%s' "$json" | jq -r 'if type == "object" then keys | join(",") else "not JSON, \(length) chars" end' 2>/dev/null))"; fi
+        else bad "Keychain '$svc' / account '$acct': listed but not readable from here"; fi
+      done < <({ [[ -n "$pin" ]] && printf '%s\t\t\n' "$pin"
+                 items=$(security dump-keychain 2>/dev/null | awk -F'"' '
+                   /^keychain:/ { svc = ""; acct = ""; labl = ""; mdat = "" }
+                   /"acct"<blob>=/ { acct = $4 }
+                   /"labl"<blob>=/ { labl = $4 }
+                   /"mdat"<timedate>=/ { mdat = substr($4, 1, 15) }
+                   /"svce"<blob>=/ { svc = $4; if (tolower(svc) ~ /claude/ || tolower(labl) ~ /claude/) print svc "\t" acct "\t" mdat }')
+                 if [[ -n "$items" ]]; then printf '%s\n' "$items"; else printf 'Claude Code-credentials\t\t\n'; fi; })
+      ok "$nitems Keychain item(s) mention Claude"
+    fi
+    prev=""
     for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" "$HOME/.claude/.credentials.json"; do
-      [[ -f "$f" ]] || continue
+      [[ -f "$f" && "$f" != "$prev" ]] || continue; prev="$f"
       if jq -e '(.claudeAiOauth.accessToken // "") != ""' "$f" >/dev/null 2>&1; then ok "file $f: claude.ai login"; [[ -n "$tok" ]] || tok=$(jq -r '.claudeAiOauth.accessToken' "$f")
       else bad "file $f: no claude.ai login in it"; fi
     done
     if [[ -z "$tok" ]]; then
-      bad "no claude.ai login found anywhere on this Mac."
+      bad "no claude.ai login found anywhere on this machine."
       echo "           In Claude Code run /status: it names the login method and, if set, the config dir."
-      echo "           If Claude Code uses CLAUDE_CONFIG_DIR, its Keychain entry has a different name; list them with:"
-      echo "             security dump-keychain | grep -o '\"Claude Code-credentials[^\"]*\"' | sort -u"
-      echo "           and pin the right one:  echo 'Claude Code-credentials-…' > ~/.config/pulse-limits/keychain"
+      if [[ "$OS" == "Darwin" ]]; then
+        echo "           If Claude Code uses CLAUDE_CONFIG_DIR, its Keychain entry has a different name; list them with:"
+        echo "             security dump-keychain | grep -o '\"Claude Code-credentials[^\"]*\"' | sort -u"
+        echo "           and pin the right one:  echo 'Claude Code-credentials-…' > ~/.config/pulse-limits/keychain"
+      else
+        echo "           On Linux Claude Code writes ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json when you log in"
+        echo "           with a claude.ai account: run 'claude' once. An API-key login writes no usable token."
+      fi
     fi
     echo "plugin run"
     pstatus=""
@@ -117,7 +151,7 @@ case "${1:-help}" in
       sleep 6; tmp=$(mktemp); code=$(curl -sS -m 15 -o "$tmp" -w '%{http_code}' -H "Authorization: Bearer $tok" -H "anthropic-beta: oauth-2025-04-20" "https://api.anthropic.com/api/oauth/usage" 2>"$tmp.err" || echo 000)
       case "$code" in
         200) ok "HTTP 200: $(jq -c '{five_hour: .five_hour.utilization, seven_day: .seven_day.utilization}' "$tmp" 2>/dev/null || echo 'unexpected JSON shape')" ;;
-        429) bad "HTTP 429 rate limited: the account made too many usage calls recently (another Mac with the panel open counts). It recovers by itself; wait a few minutes." ;;
+        429) bad "HTTP 429 rate limited: the account made too many usage calls recently (another machine with the panel open counts). It recovers by itself; wait a few minutes." ;;
         000) bad "no answer from api.anthropic.com: $(head -c 200 "$tmp.err")" ;;
         *)   bad "HTTP $code: $(head -c 240 "$tmp" | tr '\n' ' ')" ;;
       esac; rm -f "$tmp" "$tmp.err"
@@ -128,8 +162,9 @@ case "${1:-help}" in
       ok "$(jq -c '{keys: (keys | join(",")), five_hour: .five_hour.utilization, seven_day: .seven_day.utilization,
                     limits: [.limits[]? | {kind, percent, model: .scope.model.display_name}]}' "$CACHE_DIR/usage.json" 2>/dev/null || echo 'not JSON')"
     else bad "no reply cached yet"; fi
-    echo "activity"; ok "$("$LIB/bin/pulse-popover" --activity 2>&1 || echo 'helper failed')" ;;
-  keychain) [[ -n "${2:-}" ]] || { echo "usage: pulse-limits keychain 'Claude Code-credentials-…'" >&2; exit 64; }
+    echo "activity"; ok "$("$LIB/$PLUGIN" --activity 2>&1 || echo 'helper failed')" ;;
+  keychain) darwin_only keychain
+           [[ -n "${2:-}" ]] || { echo "usage: pulse-limits keychain 'Claude Code-credentials-…'" >&2; exit 64; }
            mkdir -p "$CONFIG_DIR"; printf '%s\n' "$2" > "$CONFIG_DIR/keychain"; "$LIB/$PLUGIN" --reset; refresh; echo "pinned: $2" ;;
   raw)     if [[ -f "$CACHE_DIR/usage.json" ]]; then jq . "$CACHE_DIR/usage.json"
            elif [[ -f "$CACHE_DIR/last-reply.json" ]]; then echo "no successful reply yet; the last attempt was:" >&2; jq . "$CACHE_DIR/last-reply.json"
@@ -137,13 +172,15 @@ case "${1:-help}" in
   version) sed -n 's/^# <swiftbar.version>\(.*\)<\/swiftbar.version>$/\1/p' "$LIB/$PLUGIN" ;;
   update)
     before=$("$0" version)
-    if [[ "$LIB" == */Cellar/pulse-limits/* || "$LIB" == */opt/pulse-limits/* ]]; then
+    if [[ "$LIB" == /nix/store/* ]]; then
+      echo "installed with Nix: update the flake input and rebuild (nix flake update pulse-limits)" >&2; exit 1
+    elif [[ "$LIB" == */Cellar/pulse-limits/* || "$LIB" == */opt/pulse-limits/* ]]; then
       echo "installed with Homebrew: upgrading"
       brew upgrade dnacenta/tap/pulse-limits || { echo "brew upgrade failed" >&2; exit 1; }
     elif [[ -d "$LIB/.git" ]]; then
       echo "git checkout at $LIB: pulling"
       git -C "$LIB" pull --ff-only || { echo "git pull failed (local changes?)" >&2; exit 1; }
-      (cd "$LIB" && ./build.sh)
+      if [[ "$OS" == "Darwin" ]]; then (cd "$LIB" && ./build.sh); fi
     else
       echo "installed by copying the folder: re-run the installer" >&2
       echo "  curl -fsSL https://raw.githubusercontent.com/dnacenta/pulse-limits/main/install.sh | bash" >&2
@@ -154,6 +191,79 @@ case "${1:-help}" in
     "$0" install >/dev/null                       # relink in case the plugin file name changed
     after=$("$0" version)
     if [[ "$before" == "$after" ]]; then echo "already up to date: $after"; else echo "updated: $before -> $after"; fi ;;
-  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+  waybar)  exec "$LIB/$PLUGIN" --waybar ;;
+  bar)     # the bar item alone; cache, settings and this command stay
+    case "${2:-status}" in
+      on)
+        if [[ "$OS" == "Darwin" ]]; then
+          d=$(plugin_dir); mkdir -p "$d"
+          defaults write com.ameba.SwiftBar PluginDirectory "$d"
+          rm -f "$d/$OLD_PLUGIN"
+          ln -sfn "$LIB/$PLUGIN" "$d/$PLUGIN"
+          pkill -f bin/pulse-popover 2>/dev/null || true
+          if pgrep -xq SwiftBar; then refresh; else open -a SwiftBar; fi
+          echo "linked $d/$PLUGIN -> $LIB/$PLUGIN"
+          echo "Look for the ring at the right of the menu bar. Left-click opens the monitor, right-click picks a theme."
+        else
+          # Waybar runs `pulse-limits` by name when this command is on PATH under it, else by path
+          cmd="pulse-limits"; found=$(command -v pulse-limits 2>/dev/null || true)
+          [[ -n "$found" && "$(readlink -f "$found")" == "$(readlink -f "$0")" ]] || cmd="'$(readlink -f "$0")'"
+          mkdir -p "$WAYBAR_DIR"
+          cat > "$WAYBAR_MODULE" <<EOM
+// PulseLimits Waybar module. Written by \`pulse-limits bar on\`, deleted by \`pulse-limits bar off\`.
+// Include it from your own config and add "custom/pulse-limits" to a modules list; the ring
+// glyphs are Nerd Font (md-circle-slice-1..8), picked by Waybar from the percentage.
+{
+  "custom/pulse-limits": {
+    "exec": "$cmd waybar",
+    "return-type": "json",
+    "interval": 60,
+    "format": "{text} {icon}",
+    "format-icons": ["󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"],
+    "on-click": "$cmd open",
+    "signal": 8,
+    "tooltip": true
+  }
+}
+EOM
+          echo "wrote $WAYBAR_MODULE"
+          echo "Add these two lines to your Waybar config ($WAYBAR_DIR/config.jsonc):"
+          echo "  \"include\": [\"${WAYBAR_MODULE/#$HOME/\~}\"],"
+          echo "  \"modules-right\": [..., \"custom/pulse-limits\"],"
+          echo "and the tones to style.css (the class follows the session window):"
+          cat <<'EOM'
+  #custom-pulse-limits { min-width: 12px; margin: 0 7.5px; }
+  #custom-pulse-limits.warn  { color: #ffb000; }
+  #custom-pulse-limits.crit  { color: #ff5c5c; }
+  #custom-pulse-limits.stale { color: #ffb000; }
+  #custom-pulse-limits.dead  { color: #8c8c8c; }
+EOM
+          echo "Then reload Waybar (pkill -SIGUSR2 waybar; on Omarchy: omarchy-restart-waybar)."
+        fi ;;
+      off)
+        if [[ "$OS" == "Darwin" ]]; then
+          pkill -f bin/pulse-popover 2>/dev/null || true
+          rm -f "$(plugin_dir)/$PLUGIN" "$(plugin_dir)/$OLD_PLUGIN"; refresh
+          echo "unlinked. SwiftBar itself is untouched."
+        else
+          rm -f "$WAYBAR_MODULE"
+          echo "removed $WAYBAR_MODULE"
+          echo "Now drop \"${WAYBAR_MODULE/#$HOME/\~}\" from \"include\" and \"custom/pulse-limits\" from your modules"
+          echo "in $WAYBAR_DIR/config.jsonc, and the #custom-pulse-limits rules from style.css, then reload Waybar."
+        fi ;;
+      status)
+        if [[ "$OS" == "Darwin" ]]; then
+          link="$(plugin_dir)/$PLUGIN"
+          if [[ -L "$link" && -e "$link" ]]; then echo "on: $link -> $(readlink "$link")"
+          else echo "off: not linked in $(plugin_dir) (pulse-limits bar on)"; exit 1; fi
+          pgrep -xq SwiftBar && echo "SwiftBar: running" || echo "SwiftBar: not running (open -a SwiftBar)"
+        else
+          if [[ -f "$WAYBAR_MODULE" ]]; then echo "on: $WAYBAR_MODULE"
+          else echo "off: no $WAYBAR_MODULE (pulse-limits bar on)"; exit 1; fi
+          pgrep -x waybar >/dev/null && echo "waybar: running" || echo "waybar: not running"
+        fi ;;
+      *) echo "usage: pulse-limits bar on|off|status" >&2; exit 64 ;;
+    esac ;;
   *) echo "pulse-limits: unknown command '$1' (try: pulse-limits help)" >&2; exit 64 ;;
 esac
