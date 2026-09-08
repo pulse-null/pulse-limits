@@ -307,7 +307,12 @@ pub fn mtime_f(p: &Path) -> Option<f64> {
 }
 
 /// Writes through a sibling temp file and a rename, so a reader never sees half a file.
+/// A link into the Nix store is Home Manager's: the rename would swap it for a plain file and
+/// the next switch would stop on it, so the write is refused and the message says where to change it.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if fs::read_link(path).map(|t| t.starts_with("/nix/store")).unwrap_or(false) {
+        return Err(io::Error::other(format!("{} is managed by Home Manager: change it in your Nix config and switch", path.display())));
+    }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -751,5 +756,17 @@ mod tests {
         assert_eq!(fs::read_dir(deep.parent().unwrap()).unwrap().count(), 1, "no temp file left behind");
         assert!(write_atomic(&bin.join("plain").join("sub").join("f"), b"x").is_err(), "a file where the parent should be");
         assert!(write_atomic(Path::new(""), b"x").is_err(), "no path at all");
+        // a Home Manager link into the store is refused and left alone; any other link is replaced
+        let hm = s.0.join("providers");
+        std::os::unix::fs::symlink("/nix/store/abc-home-manager-files/.config/pulse-limits/providers", &hm).unwrap();
+        let e = write_atomic(&hm, b"grok\n").unwrap_err().to_string();
+        assert!(e.contains("managed by Home Manager") && e.contains("providers"), "{e}");
+        assert_eq!(fs::read_link(&hm).unwrap(), Path::new("/nix/store/abc-home-manager-files/.config/pulse-limits/providers"));
+        let other = s.0.join("theme");
+        std::os::unix::fs::symlink(bin.join("t"), &other).unwrap();
+        write_atomic(&other, b"synth\n").unwrap();
+        assert!(fs::symlink_metadata(&other).unwrap().is_file(), "the link became the file");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "synth\n");
+        assert_eq!(fs::read_to_string(bin.join("t")).unwrap(), " a b \n\n", "the old target is untouched");
     }
 }
