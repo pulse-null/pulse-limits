@@ -2,7 +2,7 @@ class PulseLimits < Formula
   desc "Claude, Codex and Grok plan limits, as a retro patient monitor (SwiftBar)"
   homepage "https://github.com/pulse-null/pulse-limits"
   url "https://github.com/pulse-null/pulse-limits/archive/refs/tags/v0.5.4.tar.gz"
-  sha256 "2ab22559f90d666f4ad70fc7014747b00ca50b16bb954c63346886361569ba9b"
+  sha256 "db460f11e83102ca994ce69964f45aabbe882150da6b2685a4939b83e1f85f64"
   license "AGPL-3.0-or-later"
 
   depends_on "rust" => :build
