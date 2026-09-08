@@ -37,6 +37,23 @@ in a terminal tile.
 curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/install.sh | bash
 ```
 
+The script prints the two lines your Waybar config needs and the tones for `style.css`.
+On NixOS with Home Manager nothing is edited by hand: add the flake input and this block,
+then rebuild. The module, its tones, the providers and the theme are declared there;
+`nixosModules.default` installs the command alone. The tones go on the end of
+`programs.waybar.style`, so keep that text (`builtins.readFile ./style.css`), not a path.
+
+```nix
+inputs.pulse-limits.url = "github:pulse-null/pulse-limits";
+# in home.nix:
+imports = [ inputs.pulse-limits.homeManagerModules.default ];
+programs.pulse-limits = {
+  enable = true;
+  providers = [ "grok" "claude" ];   # optional: default is whatever has a login
+  waybar.enable = true;              # adds custom/pulse-limits and its tones to programs.waybar
+};
+```
+
 ### macOS
 
 ```sh
