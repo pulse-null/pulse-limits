@@ -5,7 +5,7 @@
 <h1 align="center">PulseLimits</h1>
 
 <p align="center">
-  Your Claude and Codex plan limits in the menu bar (macOS) or in Waybar (Linux), as a retro patient monitor.<br>
+  Your Claude, Codex and Grok plan limits in the menu bar (macOS) or in Waybar (Linux), as a retro patient monitor.<br>
   The heartbeat is live: it races while Claude Code is streaming and slows when it idles.
 </p>
 

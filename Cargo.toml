@@ -2,7 +2,7 @@
 name = "pulse-limits"
 version = "0.5.0"
 edition = "2021"
-description = "Your Claude and Codex plan limits as a retro patient monitor: the menu bar (SwiftBar), Waybar, and the terminal"
+description = "Your Claude, Codex and Grok plan limits as a retro patient monitor: the menu bar (SwiftBar), Waybar, and the terminal"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/dnacenta/pulse-limits"
 rust-version = "1.85"
