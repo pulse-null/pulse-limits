@@ -1,6 +1,6 @@
 [package]
 name = "pulse-limits"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Your Claude, Codex and Grok plan limits as a retro patient monitor: the menu bar (SwiftBar), Waybar, and the terminal"
 license = "AGPL-3.0-or-later"
