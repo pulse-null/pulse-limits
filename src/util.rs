@@ -335,6 +335,16 @@ pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     STANDARD.decode(clean).ok()
 }
 
+/// The window label with its provider in front when several providers share a screen: SESSION
+/// and WEEK become CLAUDE SESSION / GROK WEEK; a model or product name already says whose it is.
+pub fn qualified(provider: &str, label: &str) -> String {
+    if label == "SESSION" || label == "WEEK" {
+        format!("{} {label}", provider.to_ascii_uppercase())
+    } else {
+        label.to_string()
+    }
+}
+
 pub fn upper(s: &str) -> String {
     s.to_ascii_uppercase()
 }

@@ -66,6 +66,7 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var visible = false
     var hiddenAt = Date()
     var activityTimer: Timer?
+    var activeProvider = "claude"          // whose activity the panel's live lane follows
     var usageTimer: Timer?
     var fetching = false
     var measuring = false
@@ -151,6 +152,7 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             DispatchQueue.main.async {
                 guard self.visible else { return }
                 if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    self.activeProvider = obj["provider"] as? String ?? "claude"
                     // Dead reckoning is calibrated on Claude Code's transcripts: only Claude's session gets it.
                     if (obj["provider"] as? String ?? "claude") == "claude",
                        let fetched = obj["fetched"] as? Int,
@@ -174,10 +176,11 @@ final class App: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         guard visible, !measuring else { return }
         measuring = true
         let reading = lastReading
+        let provider = activeProvider
         let estimateDue = Date().timeIntervalSince(lastEstimateAt) >= 10   // the estimate scans minutes of transcripts: every 10 s is plenty
         DispatchQueue.global(qos: .utility).async {
             defer { DispatchQueue.main.async { self.measuring = false } }
-            guard let data = pulse(["activity"]),
+            guard let data = pulse(["activity", provider]),
                   var payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
             var estimate: [String: Any]? = nil
             if let r = reading, estimateDue,

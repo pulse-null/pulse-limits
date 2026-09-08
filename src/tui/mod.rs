@@ -411,11 +411,7 @@ fn wins(v: Option<&Value>) -> Vec<Win> {
 
 /// CLAUDE SESSION, GROK WEEK: a window named after a model or a product (FABLE, GPT-5) keeps its own name.
 fn qualify(provider: &str, w: &Win) -> Win {
-    if w.label == "SESSION" || w.label == "WEEK" {
-        Win { label: format!("{} {}", provider.to_ascii_uppercase(), w.label), ..w.clone() }
-    } else {
-        w.clone()
-    }
+    Win { label: crate::util::qualified(provider, &w.label), ..w.clone() }
 }
 
 /// An activity reading: tokens/min, idle seconds, sessions; None when there is none.
