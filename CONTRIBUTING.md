@@ -49,6 +49,12 @@ All four must pass; CI runs the same on Ubuntu and macOS. `panel.html` is checke
 rendering it in headless Chromium with a `pulse-limits payload` result in the URL
 fragment, the TUI with a pty capture; if you touch either, attach a screenshot.
 
+CI also measures line coverage with `cargo llvm-cov` and fails under 90 % on macOS, so
+new code comes with tests: fixtures and the local server for HTTP, fake commands on a
+private `PATH` for `security`, `open` and friends, ratatui's `TestBackend` for the TUI. A
+test never reads the terminal, never calls a live API and never touches the real
+`~/.config`.
+
 ## Adding a provider
 
 Providers live in `src/providers/`. Copy the newest one, `grok.rs`, and change it. Do
