@@ -12,6 +12,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod grok;
 
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -22,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::util::{cache_dir, config_dir, mtime, now, read_trimmed, round_half_up, write_atomic};
 
-pub const KNOWN: [&str; 2] = ["claude", "codex"]; // the name is also the CLI's process name
+pub const KNOWN: [&str; 3] = ["claude", "codex", "grok"]; // the name is also the CLI's process name
 pub const HISTORY_HOURS: i64 = 12; // trend strip depth
 pub const BACKOFF_SECS: i64 = 180; // after a 429: the quotas are small and shared across machines
 
@@ -148,6 +149,7 @@ pub fn run(name: &str, min_interval: i64) -> Doc {
     let r = catch_unwind(AssertUnwindSafe(|| match name {
         "claude" => claude::run(min_interval),
         "codex" => codex::run(min_interval),
+        "grok" => grok::run(min_interval),
         _ => Doc::failed(name),
     }));
     r.unwrap_or_else(|_| Doc::failed(name))
@@ -158,6 +160,7 @@ pub fn doctor(name: &str, pstatus: &str) {
     match name {
         "claude" => claude::doctor(pstatus),
         "codex" => codex::doctor(pstatus),
+        "grok" => grok::doctor(pstatus),
         _ => {}
     }
 }

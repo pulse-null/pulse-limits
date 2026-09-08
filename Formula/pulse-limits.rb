@@ -1,5 +1,5 @@
 class PulseLimits < Formula
-  desc "Claude and Codex plan limits in the menu bar, as a retro patient monitor (SwiftBar)"
+  desc "Claude, Codex and Grok plan limits, as a retro patient monitor (SwiftBar)"
   homepage "https://github.com/dnacenta/pulse-limits"
   url "https://github.com/dnacenta/pulse-limits/archive/refs/tags/v0.5.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000" # set at release: shasum -a 256 v0.5.0.tar.gz

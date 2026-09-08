@@ -1,0 +1,20 @@
+{
+  "https://auth.x.ai::00000000-0000-4000-8000-000000000000": {
+    "key": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6ImV4YW1wbGUta2lkIn0.eyJpc3MiOiJodHRwczovL2F1dGgueC5haSIsInN1YiI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImF1ZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMCIsImV4cCI6MTc4ODg5ODg1NCwiaWF0IjoxNzg4ODc3MjU0LCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIG9mZmxpbmVfYWNjZXNzIGdyb2stY2xpOmFjY2VzcyBhcGk6YWNjZXNzIiwicHJpbmNpcGFsX3R5cGUiOiJVc2VyIiwicHJpbmNpcGFsX2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiY2xpZW50X2lkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAwIiwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwidGllciI6NCwidGVhbV9pZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyJ9.RFVNTVktU0lHTkFUVVJFLU5PVC1BLVJFQUwtVE9LRU4tRFVNTVktU0lHTkFUVVJFLU5PVC1BLVJFQUwtVE9LRU4",
+    "auth_mode": "oidc",
+    "create_time": "2026-09-08T14:20:55.031303Z",
+    "user_id": "00000000-0000-4000-8000-000000000001",
+    "email": "user@example.com",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "profile_image_asset_id": "00000000-0000-4000-8000-000000000004",
+    "principal_type": "User",
+    "principal_id": "00000000-0000-4000-8000-000000000001",
+    "team_id": "00000000-0000-4000-8000-000000000003",
+    "coding_data_retention_opt_out": true,
+    "refresh_token": "DUMMYREFRESHTOKEN_opaque_86_chars_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "expires_at": "2026-09-08T20:20:55.031303Z",
+    "oidc_issuer": "https://auth.x.ai",
+    "oidc_client_id": "00000000-0000-4000-8000-000000000000"
+  }
+}

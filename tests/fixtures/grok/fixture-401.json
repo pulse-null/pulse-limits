@@ -1,0 +1,20 @@
+{
+  "http": 401,
+  "request": "GET /v1/billing?format=credits with an invalid bearer (Authorization: Bearer invalid.token.shape-probe, X-XAI-Token-Auth: xai-grok-cli)",
+  "headers": {
+    "date": "Tue, 08 Sep 2026 14:28:35 GMT",
+    "content-type": "application/json",
+    "content-length": "143",
+    "www-authenticate": "Bearer error=\"invalid_token\", error_description=\"Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=PermissionDenied, reason=no auth context)\"",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "set-cookie": "<redacted>",
+    "cf-cache-status": "DYNAMIC",
+    "speculation-rules": "\"/cdn-cgi/speculation\"",
+    "server": "cloudflare",
+    "cf-ray": "a37ea3f6cd37c90d-MAD",
+    "alt-svc": "h3=\":443\"; ma=86400"
+  },
+  "body": {
+    "error": "Invalid or expired credentials (auth_kind=bearer, x_xai_token_auth=xai-grok-cli, upstream=PermissionDenied, reason=no auth context)"
+  }
+}

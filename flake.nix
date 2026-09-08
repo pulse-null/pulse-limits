@@ -1,5 +1,5 @@
 {
-  description = "PulseLimits: your Claude and Codex plan limits as a retro patient monitor. One Rust binary; on Linux a Waybar module and a command.";
+  description = "PulseLimits: your Claude, Codex and Grok plan limits as a retro patient monitor. One Rust binary; on Linux a Waybar module and a command.";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -29,7 +29,7 @@
           '';
           doCheck = false; # the unit tests bind local sockets; run `cargo test` in a checkout
           meta = with pkgs.lib; {
-            description = "Claude and Codex plan limits as a retro patient monitor: a Waybar module, a terminal UI and a command";
+            description = "Claude, Codex and Grok plan limits as a retro patient monitor: a Waybar module, a terminal UI and a command";
             homepage = "https://github.com/dnacenta/pulse-limits";
             license = licenses.agpl3Plus;
             mainProgram = "pulse-limits";

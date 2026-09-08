@@ -2,7 +2,7 @@
 # <swiftbar.title>PulseLimits</swiftbar.title>
 # <swiftbar.version>v0.5.0</swiftbar.version>
 # <swiftbar.author>Daniel Nacenta</swiftbar.author>
-# <swiftbar.desc>Your Claude and Codex plan limits as a retro patient monitor: the heart rate is your usage.</swiftbar.desc>
+# <swiftbar.desc>Your Claude, Codex and Grok plan limits as a retro patient monitor: the heart rate is your usage.</swiftbar.desc>
 # <swiftbar.dependencies>bash</swiftbar.dependencies>
 # <swiftbar.runInBash>false</swiftbar.runInBash>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
