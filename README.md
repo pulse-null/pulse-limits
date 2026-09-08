@@ -116,11 +116,14 @@ pulse-limits keychain NAME pin the Keychain entry holding the login
 ## Terminal UI
 
 The same monitor in a terminal, for a tmux pane or a tile in a tiling window
-manager. It is a small Rust program (`tui/`, built on ratatui) that runs the
-plugin for its payload every five seconds and the activity helper every two, so
-it shows what the panel shows: the heartbeat, the session number and its reset,
-the other windows as bars, twelve hours of trend. It never talks to the network
-itself.
+manager. It is a small Rust program (`tui/`, built on ratatui). Every five
+seconds it reads the payload the plugin last packed for the panel
+(`~/.cache/pulse-limits/panel.url`, refreshed by the menu bar every minute), every
+two minutes it runs the plugin itself as the popover does, which is what feeds a
+box with no menu bar, and every two seconds it asks the activity helper. So it
+shows what the panel shows: the heartbeat, the session number and its reset, the
+other windows as bars, twelve hours of trend. It never talks to the network
+itself, and the plugin keeps its own API throttle.
 
 ```sh
 pulse-limits tui                 # or: pulse-limits claude
@@ -149,8 +152,8 @@ pulse-limits tui --theme synth
 ```
 
 Keys: `q` quit, `t` next theme (crt, modern, cyber, synth, analog; it starts
-on the panel's), `r` re-read the payload now (the plugin keeps its own throttle,
-so this is not an extra API call), `?` help. Colour follows the percentage as in
+on the panel's), `r` re-read now (it runs the plugin only when the panel's file
+is older than two minutes), `?` help. Colour follows the percentage as in
 the panel: green below 60 %, amber below 85 %, red above. Truecolor terminals get
 the panel's palettes, others the 16 ANSI colours. It degrades down to about
 40x12 and looks best from 90x28 up; the trace is braille, so the terminal font

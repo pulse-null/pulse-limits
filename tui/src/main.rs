@@ -2,15 +2,20 @@
 //!
 //!   pulse-tui [claude] [--theme NAME]      (`pulse-limits tui` and `pulse-limits claude` run this)
 //!
-//! Reads the merged payload the plugin builds (`pulse-limits.1m.sh --payload`) every
-//! 5 s and the live activity (`bin/pulse-popover --activity`, or the Python port when
-//! that is what exists) every 2 s, and draws what the panel draws: the ECG whose rate
-//! follows the tokens per minute, the session percentage in big digits, the other
-//! windows as bars, twelve hours of history as a sparkline. Meant for a tmux pane or a
-//! tiling-WM tile; degrades down to about 40x12. Never touches the network itself.
+//! Every 5 s it reads the payload the plugin last wrote for the panel
+//! (`~/.cache/pulse-limits/panel.url`, a `file://…#base64-JSON` line the menu bar
+//! rewrites every minute, estimate included): no process, no API call. Every 120 s,
+//! as the popover does, it runs `pulse-limits.1m.sh --payload` itself, which is what
+//! feeds a box with no menu bar; the plugin keeps its own API throttle. Activity comes
+//! from `bin/pulse-popover --activity` (or the Python port) every 2 s. It draws what the
+//! panel draws: the ECG whose rate follows the tokens per minute, the session percentage
+//! in big digits, the other windows as bars, twelve hours of history as a sparkline.
+//! Meant for a tmux pane or a tiling-WM tile; degrades down to about 40x12. Never
+//! touches the network itself.
 //!
 //! The plugin's folder comes from `PULSE_LIB` (the CLI sets it) or is the parent of the
-//! folder this binary sits in (`$LIB/bin/pulse-tui`).
+//! folder this binary sits in (`$LIB/bin/pulse-tui`). The cache is
+//! `$XDG_CACHE_HOME/pulse-limits`, default `~/.cache/pulse-limits`.
 //!
 //! Keys: q quit, t next theme, r re-read the payload now, ? help.
 
@@ -34,7 +39,8 @@ use ratatui::{DefaultTerminal, Frame};
 use serde_json::{Map, Value};
 
 const THEMES: [&str; 5] = ["crt", "modern", "cyber", "synth", "analog"];
-const PAYLOAD_EVERY: Duration = Duration::from_secs(5); // the plugin throttles the API call itself
+const PANEL_EVERY: Duration = Duration::from_secs(5); // panel.url: a file read, decoded only when its mtime moved
+const PAYLOAD_EVERY: Duration = Duration::from_secs(120); // `--payload` runs, as the popover does; the plugin throttles the API
 const ACTIVITY_EVERY: Duration = Duration::from_secs(2); // as the popover does
 const FRAME: Duration = Duration::from_millis(50); // ~20 fps; ratatui only sends what changed
 const SWEEP: f64 = 3.7; // s for the trace to cross the screen, like the panel (336 px at 90 px/s)
@@ -163,12 +169,53 @@ fn hhmm(epoch: f64, offset: i64) -> String {
     format!("{:02}:{:02}", t.rem_euclid(86400) / 3600, t.rem_euclid(3600) / 60)
 }
 
-fn config_dir() -> PathBuf {
-    match env::var_os("XDG_CONFIG_HOME") {
+fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    match env::var_os(var) {
         Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".config"),
+        _ => PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(fallback),
     }
     .join("pulse-limits")
+}
+
+fn config_dir() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
+fn cache_dir() -> PathBuf {
+    xdg_dir("XDG_CACHE_HOME", ".cache")
+}
+
+fn mtime(p: &Path) -> Option<SystemTime> {
+    p.metadata().and_then(|m| m.modified()).ok()
+}
+
+fn age_of(p: &Path) -> Option<Duration> {
+    mtime(p).and_then(|m| SystemTime::now().duration_since(m).ok())
+}
+
+/// Standard base64 with `=` padding, as `base64 | tr -d '\n'` writes it. Lenient on whitespace.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            _ => return None,
+        };
+        buf = (buf << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 fn saved_theme() -> usize {
@@ -187,32 +234,55 @@ struct Shared {
 
 struct Feed {
     shared: Arc<Mutex<Shared>>,
-    poke: Arc<AtomicBool>, // the r key: run the payload now (the plugin decides whether the API is asked)
+    poke: Arc<AtomicBool>, // the r key: re-read panel.url now, and run `--payload` only if that is stale
     activity_cmd: Option<Vec<String>>,
+    panel_url: PathBuf,
 }
 
 impl Feed {
     fn start(lib: &Path) -> Feed {
         let plugin = lib.join("pulse-limits.1m.sh");
+        let panel_url = cache_dir().join("panel.url");
         let activity_cmd = activity_cmd(lib);
         let shared = Arc::new(Mutex::new(Shared::default()));
         let poke = Arc::new(AtomicBool::new(false));
-        let (s, p, act) = (shared.clone(), poke.clone(), activity_cmd.clone());
+        let (s, p, act, url) = (shared.clone(), poke.clone(), activity_cmd.clone(), panel_url.clone());
         thread::spawn(move || {
-            let (mut next_payload, mut next_activity) = (Instant::now(), Instant::now());
-            loop {
-                if Instant::now() >= next_payload || p.swap(false, Ordering::Relaxed) {
-                    next_payload = Instant::now() + PAYLOAD_EVERY;
-                    let r = run_payload(&plugin);
-                    let mut s = s.lock().unwrap();
-                    match r {
-                        Ok(v) => {
-                            s.payload = Some(v);
-                            s.error = None;
-                        }
-                        Err(e) => s.error = Some(e),
+            let stale = |url: &Path| age_of(url).is_none_or(|a| a > PAYLOAD_EVERY);
+            let publish = |r: Result<Value, (String, String)>| {
+                let mut s = s.lock().unwrap();
+                match r {
+                    Ok(v) => {
+                        s.payload = Some(v);
+                        s.error = None;
                     }
-                    s.version += 1;
+                    Err(e) => s.error = Some(e),
+                }
+                s.version += 1;
+            };
+            let mut seen_mtime = None;
+            let mut next_panel = Instant::now();
+            // a fresh panel.url means a menu bar is feeding it: no need to run the plugin ourselves yet
+            let mut next_payload = if stale(&url) { Instant::now() } else { Instant::now() + PAYLOAD_EVERY };
+            let mut next_activity = Instant::now();
+            loop {
+                let poked = p.swap(false, Ordering::Relaxed);
+                if poked || Instant::now() >= next_panel {
+                    next_panel = Instant::now() + PANEL_EVERY;
+                    let m = mtime(&url);
+                    if m.is_some() && (poked || m != seen_mtime) {
+                        seen_mtime = m;
+                        if let Some(v) = read_panel_url(&url) {
+                            publish(Ok(v));
+                        }
+                    }
+                    if poked && stale(&url) {
+                        next_payload = Instant::now();
+                    }
+                }
+                if Instant::now() >= next_payload {
+                    next_payload = Instant::now() + PAYLOAD_EVERY;
+                    publish(run_payload(&plugin));
                 }
                 if let Some(cmd) = &act {
                     if Instant::now() >= next_activity {
@@ -227,8 +297,17 @@ impl Feed {
                 thread::sleep(Duration::from_millis(250));
             }
         });
-        Feed { shared, poke, activity_cmd }
+        Feed { shared, poke, activity_cmd, panel_url }
     }
+}
+
+/// The payload the plugin last packed for the panel: `file://…/panel.html#<base64 JSON>`.
+fn read_panel_url(p: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(p).ok()?;
+    let (_, b64) = text.trim().rsplit_once('#')?;
+    let v: Value = serde_json::from_slice(&base64_decode(b64)?).ok()?;
+    v.get("windows")?.as_array()?;
+    Some(v)
 }
 
 fn activity_cmd(lib: &Path) -> Option<Vec<String>> {
@@ -894,7 +973,8 @@ fn render_help(f: &mut Frame, app: &App, p: &Palette) {
         "r   re-read the payload now".to_string(),
         "?   close this help".to_string(),
         String::new(),
-        format!("payload   pulse-limits.1m.sh --payload  every {}s", PAYLOAD_EVERY.as_secs()),
+        format!("payload   {} every {}s", app.feed.panel_url.display(), PANEL_EVERY.as_secs()),
+        format!("          pulse-limits.1m.sh --payload every {}s (once now if that file is stale)", PAYLOAD_EVERY.as_secs()),
         format!("activity  {activity}"),
         format!("lib       {}", app.lib.display()),
     ];
