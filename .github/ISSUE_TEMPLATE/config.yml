@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/pulse-null/pulse-limits/security/advisories/new
+    about: A token in output, a write to a credential store, a request to another host, a spawned CLI. Report it privately here, not as an issue.
