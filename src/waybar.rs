@@ -108,7 +108,7 @@ mod tests {
             provider: "claude".into(),
             plan: "MAX 20X".into(),
             source: "CACHE".into(),
-            fetched: now() - 45,
+            fetched: now() - 90,
             status: String::new(),
             hint: String::new(),
             windows: vec![Window { label: "SESSION".into(), pct: json!(17), resets: None }, Window { label: "WEEK".into(), pct: json!(42), resets: None }],
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(v["text"], "17%");
         assert_eq!(v["class"], "ok");
         assert_eq!(v["percentage"], 17);
-        assert_eq!(v["tooltip"], "PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nEXTRA    1.5 EUR\n8.1K TOK/MIN · 4 SESSIONS\nUPDATED 45S AGO · CACHE");
+        assert_eq!(v["tooltip"], "PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nEXTRA    1.5 EUR\n8.1K TOK/MIN · 4 SESSIONS\nUPDATED 1M AGO · CACHE");
         assert!(render(&b).starts_with("{\"text\":\"17%\",\"tooltip\":\"PULSE LIMITS"));
         let mut stale = d.clone();
         stale.status = "TOKEN EXPIRED".into();
@@ -131,7 +131,7 @@ mod tests {
         assert!(v["tooltip"]
             .as_str()
             .unwrap()
-            .ends_with("\nIDLE 2M\nUPDATED 45S AGO · CACHE\n? TOKEN EXPIRED\nOPEN CLAUDE CODE ONCE, IT REFRESHES THE TOKEN"));
+            .ends_with("\nIDLE 2M\nUPDATED 1M AGO · CACHE\n? TOKEN EXPIRED\nOPEN CLAUDE CODE ONCE, IT REFRESHES THE TOKEN"));
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert_eq!((v["text"].as_str(), v["class"].as_str(), v["percentage"].as_i64()), (Some("--"), Some("dead"), Some(0)));
@@ -146,7 +146,7 @@ mod tests {
         let mut vars = Vars::default();
         let projects = s.0.join("projects");
         vars.set("CLAUDE_PROJECTS_DIR", &projects);
-        let fetched = now() - 45;
+        let fetched = now() - 90;
         let mk = |name: &str, plan: &str, status: &str, wins: Vec<(&str, i64)>| Doc {
             provider: name.into(),
             plan: plan.into(),
@@ -167,7 +167,7 @@ mod tests {
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", json!({ "tok_per_min": 0, "idle_s": 0, "sessions": 0 }));
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         let tip = v["tooltip"].as_str().unwrap();
-        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 4"), "{tip}");
+        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 1M"), "{tip}");
         assert!(!tip.contains("GROK"));
         let b = assemble(
             vec![mk("claude", "", "", vec![("SESSION", 17)]), mk("grok", "", "", vec![("WEEK", 90)])],
@@ -180,7 +180,7 @@ mod tests {
         assert!(v["tooltip"]
             .as_str()
             .unwrap()
-            .starts_with("PULSE LIMITS\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nWEEK     ██████████████████░░  90%   RESETS IN ?\nUPDATED 4"));
+            .starts_with("PULSE LIMITS\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nWEEK     ██████████████████░░  90%   RESETS IN ?\nUPDATED 1M"));
         // a calibrated estimate moves the number the bar shows: the tooltip says so
         std::fs::create_dir_all(&projects).unwrap();
         std::fs::write(
@@ -197,6 +197,6 @@ mod tests {
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         assert_eq!(v["text"], "20%");
         assert_eq!(v["percentage"], 20);
-        assert!(v["tooltip"].as_str().unwrap().contains("\nSESSION NOW 20% · EST\nUPDATED 4"));
+        assert!(v["tooltip"].as_str().unwrap().contains("\nSESSION NOW 20% · EST\nUPDATED 1M"));
     }
 }

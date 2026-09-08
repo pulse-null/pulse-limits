@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::providers::codex::jwt_claims;
-use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
+use crate::providers::{bad, ok, say, Doc, Store, Window, BACKOFF_SECS, PROBE_DELAY_SECS};
 use crate::util::{
     cache_dir, env_path, epoch_of, hhmmss, home, is_executable, is_macos, iso_utc, local_offset, mtime, read_trimmed, upper, which, write_atomic,
 };
@@ -371,7 +371,7 @@ pub fn doctor(pstatus: &str) {
         None => ok("grok CLI not found (only needed to log in)"),
     }
     ok(&format!("usage url: {}", billing_url(&base)));
-    println!("  usage api");
+    say("  usage api");
     if auth.token.is_empty() {
         bad("skipped (no usable token)");
     } else if pstatus.is_empty() {
@@ -379,7 +379,7 @@ pub fn doctor(pstatus: &str) {
     } else if st.backing_off() {
         ok(&format!("not probed: backing off after a 429 until {}", hhmmss(st.backoff_until(), local_offset())));
     } else {
-        std::thread::sleep(Duration::from_secs(6));
+        std::thread::sleep(Duration::from_secs(PROBE_DELAY_SECS));
         let bearer = format!("Bearer {}", auth.token);
         let (code, body) = crate::providers::http_get(&billing_url(&base), &headers(&bearer));
         let text = String::from_utf8_lossy(&body).replace('\n', " ");
@@ -395,7 +395,7 @@ pub fn doctor(pstatus: &str) {
             c => bad(&format!("HTTP {c}: {}", text.chars().take(240).collect::<String>())),
         }
     }
-    println!("  last reply (shape digest)");
+    say("  last reply (shape digest)");
     st.doctor_digests(digest);
 }
 
@@ -406,7 +406,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::providers::testing::{refused, serve, Scratch, ENV};
+    use crate::providers::testing::{capture, refused, serve, Sandbox, Scratch, ENV};
 
     // the fixtures of issue #8: a real reply (redacted), the same reply as the CLI logs it on a
     // fresh period, the settings envelope, the 401, and an auth.json with a dummy token
@@ -732,8 +732,8 @@ mod tests {
         lookup_plan(&serve(200, SETTINGS), "tok");
         assert_eq!(plan_cached().as_deref(), Some("X PREMIUM+"));
         assert!(!plan_stale(now));
-        assert!(plan_stale(now + PLAN_TTL + 1));
-        // a settings reply naming no tier: looked up, nothing to show
+        assert!(plan_stale(crate::util::now() + PLAN_TTL + 1)); // from the clock now: the file may be a second newer than `now`
+                                                                // a settings reply naming no tier: looked up, nothing to show
         lookup_plan(&serve(200, "{\"allow_access\":false}"), "tok");
         assert_eq!(plan_cached().as_deref(), Some(""));
         // an error keeps the last label; no answer leaves the file alone
@@ -836,6 +836,70 @@ mod tests {
         let d = run(270);
         assert_eq!((d.status.as_str(), d.source.as_str()), ("TOKEN EXPIRED", ""));
         drop(env);
+        drop(s);
+    }
+
+    #[test]
+    fn doctor_reports_the_login_the_plan_and_the_endpoint() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("grok-doc");
+        let home = s.home().join(".grok");
+        std::fs::create_dir_all(&home).unwrap();
+        let base = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL").unwrap();
+        let out = capture(|| doctor(""));
+        assert!(out.contains(&format!("  ok       GROK_HOME={} in this shell", home.display())), "{out}");
+        assert!(out.contains(&format!("  ok       GROK_CLI_CHAT_PROXY_BASE_URL={base} in this shell")), "{out}");
+        assert!(out.contains(&format!("  PROBLEM  no {}: run 'grok login' (or set GROK_HOME", home.join("auth.json").display())), "{out}");
+        assert!(out.contains("  ok       plan: not looked up yet (asked after the first good billing reply, then hourly)\n"), "{out}");
+        assert!(out.contains("  ok       grok CLI not found (only needed to log in)\n"), "{out}");
+        assert!(out.contains(&format!("  ok       usage url: {base}/billing?format=credits\n")), "{out}");
+        assert!(out.ends_with("  usage api\n  PROBLEM  skipped (no usable token)\n  last reply (shape digest)\n  PROBLEM  no reply cached yet\n"), "{out}");
+        // an API key in the file, and the CLI under GROK_HOME/bin (found, never run)
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::os::unix::fs::symlink(which("true").unwrap(), home.join("bin").join("grok")).unwrap();
+        auth_file(&home, r#"{"https://auth.x.ai::c": {"key": "xai-notARealKey000"}}"#);
+        let out = capture(|| doctor(""));
+        assert!(out.contains(": NO PLAN ACCESS (GROK IS LOGGED IN WITH AN API KEY, NOT A SUBSCRIPTION. RUN: grok login)\n"), "{out}");
+        assert!(out.contains(&format!("  ok       grok CLI: {} (never run from here", home.join("bin").join("grok").display())), "{out}");
+        // the fixture login; a settings lookup that named no tier, then one that did
+        auth_file(&home, &auth_expiring("2099-01-01T00:00:00Z"));
+        std::fs::write(s.scratch.cache().join("plan-grok"), "\n").unwrap();
+        let out = capture(|| doctor(""));
+        assert!(
+            out.contains(": oidc login, principal User, token expires 2099-01-01T00:00:00Z, created 2026-09-08T14:20:55.031303Z, refresh token present\n"),
+            "{out}"
+        );
+        assert!(out.contains("  ok       plan: the settings reply named no tier\n"), "{out}");
+        assert!(out.contains("  usage api\n  ok       reached through the plugin (not probed again: keep the calls rare)\n"), "{out}");
+        std::fs::write(s.scratch.cache().join("plan-grok"), "X PREMIUM+\n").unwrap();
+        let out = capture(|| doctor(""));
+        assert!(out.contains(&format!("  ok       plan: X PREMIUM+ (from {base}/settings, 0 min old)\n")), "{out}");
+        // backing off: not probed
+        Store::new("grok").set_backoff(180);
+        assert!(capture(|| doctor("RATE LIMITED")).contains("  ok       not probed: backing off after a 429 until "));
+        std::fs::remove_file(s.scratch.cache().join("backoff-grok")).unwrap();
+        // the probe, one answer per call
+        for (url, line) in [
+            (serve(200, REPLY), "  ok       HTTP 200: {\"keys\":\"config\",\"period\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"creditUsagePercent\":1.0,\"onDemandCap\":0,\"error\":null}\n"),
+            (serve(200, "nope"), "  ok       HTTP 200: unexpected JSON shape\n"),
+            (serve(401, denied_body()), "  PROBLEM  HTTP 401: the token is expired or revoked. Open the Grok CLI once, or run 'grok login'.\n"),
+            (serve(403, "{}"), "  PROBLEM  HTTP 403: this login cannot read plan limits"),
+            (serve(429, "{}"), "  PROBLEM  HTTP 429 rate limited: too many usage calls recently."),
+            (refused(), "  PROBLEM  no answer from cli-chat-proxy.grok.com\n"),
+            (serve(502, "upstream\nerror"), "  PROBLEM  HTTP 502: upstream error\n"),
+        ] {
+            std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", url);
+            let out = capture(|| doctor("HTTP 502"));
+            assert!(out.contains(line), "{out}");
+        }
+        // the digest of a cached reply, and no override line when the base is the default
+        let mut st = Store::new("grok");
+        fetch(&mut st, &serve(200, REPLY), "tok");
+        std::env::remove_var("GROK_CLI_CHAT_PROXY_BASE_URL");
+        let out = capture(|| doctor(""));
+        assert!(!out.contains("GROK_CLI_CHAT_PROXY_BASE_URL="), "{out}");
+        assert!(out.contains(&format!("  ok       usage url: {BASE_URL}/billing?format=credits\n")), "{out}");
+        assert!(out.contains("  ok       cached reply (0 min old): {\"keys\":\"config\",\"period\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"creditUsagePercent\":1.0,\"onDemandCap\":0,\"error\":null}\n"), "{out}");
         drop(s);
     }
 }

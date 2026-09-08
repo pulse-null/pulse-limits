@@ -169,4 +169,60 @@ mod tests {
         assert!(set_theme("nope").is_err());
         assert_eq!(std::fs::read_to_string(config_dir().join("theme")).unwrap(), "synth\n");
     }
+
+    #[test]
+    fn build_asks_the_enabled_providers_and_writes_the_panel_url() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = crate::providers::testing::Sandbox::new("payload-build");
+        let lib = s.scratch.0.join("lib");
+        // nothing enabled, nothing running: NO PROVIDER SELECTED, and panel.url is written
+        let b = build(PANEL_INTERVAL, true, None);
+        assert_eq!((b.active.as_str(), b.str("status").as_str(), b.have_data, b.enabled.len(), b.docs.len()), ("", "NO PROVIDER SELECTED", false, 0, 0));
+        let url = std::fs::read_to_string(s.scratch.cache().join("panel.url")).unwrap();
+        assert_eq!(url, format!("file://{}/panel.html#{}", lib.display(), b.b64));
+        assert_eq!(b.panel_url(&lib), url);
+        assert_eq!(b.active_doc().status, "NO PROVIDER SELECTED");
+        // two enabled, none running (pgrep is shimmed): the first is the bar's; both say NO LOGIN without a call
+        s.enable("codex grok");
+        let b = build(PANEL_INTERVAL, false, None);
+        assert_eq!((b.active.as_str(), b.str("provider").as_str(), b.str("status").as_str(), b.theme.as_str()), ("codex", "codex", "NO LOGIN", "crt"));
+        assert_eq!(b.payload["providers"].as_array().unwrap().len(), 2);
+        assert_eq!(b.payload["providers"][1]["name"], "grok");
+        assert_eq!(b.payload["activity"]["sessions"], 0);
+        assert_eq!(active_of(&b.enabled), "codex");
+        assert_eq!(active_of(&[]), "");
+        // a provider named that is not enabled: asked too, shown, and listed in providers[]
+        let b = build(PANEL_INTERVAL, false, Some("claude"));
+        assert_eq!((b.active.as_str(), b.docs.len(), b.active_doc().provider.as_str()), ("claude", 3, "claude"));
+        assert_eq!(b.payload["providers"].as_array().unwrap().len(), 3);
+        // a named one that is enabled is not asked twice
+        let b = build(PANEL_INTERVAL, false, Some("grok"));
+        assert_eq!((b.active.as_str(), b.docs.len()), ("grok", 2));
+        drop(s);
+    }
+
+    #[test]
+    fn a_calibrated_estimate_is_what_the_bar_shows() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = crate::providers::testing::Sandbox::new("payload-estimate");
+        let projects = s.home().join("projects").join("p");
+        std::fs::create_dir_all(&projects).unwrap();
+        let fetched = crate::util::now() - 600;
+        // 2750 output tokens since the reading, at k = 0.001 % per token: 13 + 2.75 = 15.75 -> 15.8 -> the bar shows 16
+        crate::estimate::save(&crate::estimate::calib_file(), &crate::estimate::Calib { anchor_pct: 13.0, anchor_at: fetched, k: 0.001, samples: 2 });
+        std::fs::write(
+            projects.join("s.jsonl"),
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"{}\",\"message\":{{\"id\":\"m\",\"usage\":{{\"output_tokens\":2750}}}}}}\n",
+                crate::util::iso_utc(fetched + 60)
+            ),
+        )
+        .unwrap();
+        let mut d = doc("claude", vec![("SESSION", json!(13)), ("WEEK", json!(17))]);
+        d.fetched = fetched;
+        let b = assemble(vec![d], vec!["claude".into()], "claude", "crt", Value::Null);
+        assert_eq!((b.payload["estimate"]["calibrated"].as_bool(), b.payload["estimate"]["pct_est"].as_f64()), (Some(true), Some(15.8)));
+        assert_eq!((b.s_api, b.s_pct), (13.0, 16));
+        drop(s);
+    }
 }

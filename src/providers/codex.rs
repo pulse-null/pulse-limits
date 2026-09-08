@@ -10,7 +10,7 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
 use serde_json::{json, Value};
 
-use crate::providers::{bad, ok, Doc, Store, Window, BACKOFF_SECS};
+use crate::providers::{bad, ok, say, Doc, Store, Window, BACKOFF_SECS, PROBE_DELAY_SECS};
 use crate::util::{env_path, hhmmss, home, is_macos, iso_utc, local_offset, upper, which};
 
 pub const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -264,7 +264,7 @@ pub fn doctor(pstatus: &str) {
         None => ok("codex CLI not on PATH (only needed to log in)"),
     }
     ok(&format!("usage url: {url}"));
-    println!("  usage api");
+    say("  usage api");
     if auth.token.is_empty() {
         bad("skipped (no usable token)");
     } else if pstatus.is_empty() {
@@ -272,7 +272,7 @@ pub fn doctor(pstatus: &str) {
     } else if st.backing_off() {
         ok(&format!("not probed: backing off after a 429 until {}", hhmmss(st.backoff_until(), local_offset())));
     } else {
-        std::thread::sleep(std::time::Duration::from_secs(6));
+        std::thread::sleep(std::time::Duration::from_secs(PROBE_DELAY_SECS));
         let bearer = format!("Bearer {}", auth.token);
         let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
         if !auth.account.is_empty() {
@@ -294,7 +294,7 @@ pub fn doctor(pstatus: &str) {
             c => bad(&format!("HTTP {c}: {}", text.chars().take(240).collect::<String>())),
         }
     }
-    println!("  last reply (shape digest)");
+    say("  last reply (shape digest)");
     st.doctor_digests(|c| {
         let extra: Vec<Value> =
             c.get("additional_rate_limits").and_then(Value::as_array).map(|a| a.iter().map(|e| e["limit_name"].clone()).collect()).unwrap_or_default();
@@ -306,7 +306,7 @@ pub fn doctor(pstatus: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::testing::{refused, serve, Scratch, ENV};
+    use crate::providers::testing::{capture, refused, serve, Sandbox, Scratch, ENV};
 
     // the fixtures of PR #4: an unsigned JWT with exp 1788870066 (past) / 1788877266, plan plus, account acct_fixture
     const ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6ImZpeHR1cmVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9maXh0dXJlIn19.sig";
@@ -438,6 +438,111 @@ mod tests {
         let mut st = Store::new("codex");
         fetch(&mut st, &serve(403, "{}"), "tok", "");
         assert_eq!(st.hint, "THIS LOGIN CANNOT READ PLAN LIMITS. LOG IN TO CODEX WITH A CHATGPT PLAN");
+        drop(s);
+    }
+
+    fn b64url(s: &str) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+    }
+
+    /// An unsigned JWT with the given claims (the run tests use the real clock, so exp is 2100).
+    fn jwt(claims: &str) -> String {
+        format!("{}.{}.sig", b64url(r#"{"alg":"none","typ":"JWT"}"#), b64url(claims))
+    }
+
+    fn valid_auth() -> String {
+        format!(
+            r#"{{"tokens": {{"access_token": "{}", "refresh_token": "rt", "id_token": "{ID_TOKEN}", "account_id": "acct_fixture"}}, "last_refresh": "2026-09-08T10:00:00.000Z"}}"#,
+            jwt(r#"{"exp":4102444800}"#)
+        )
+    }
+
+    #[test]
+    fn run_live_then_cached() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("codex-run");
+        let dir = s.home().join(".codex");
+        assert_eq!(codex_dir(), dir);
+        // no auth file: NO LOGIN, no call
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.source.as_str(), d.fetched, d.plan.as_str()), ("NO LOGIN", "", 0, ""));
+        assert!(d.hint.starts_with("NO CODEX LOGIN ON THIS"));
+        // an expired token: reported, no call
+        auth_file(&dir, &format!(r#"{{"tokens": {{"access_token": "{EXPIRED}", "id_token": "{ID_TOKEN}"}}}}"#));
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.plan.as_str()), ("TOKEN EXPIRED", "PLUS"));
+        assert!(!s.scratch.cache().join("last-reply-codex.json").exists());
+        // a valid one: the call goes where config.toml points
+        auth_file(&dir, &valid_auth());
+        s.codex_base(&serve(200, REPLY));
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.source.as_str(), d.plan.as_str(), d.windows.len(), d.history.len()), ("", "LIVE", "PLUS", 3, 1));
+        // the cache is fresh: no call (a call would hit a closed port and say NETWORK)
+        s.codex_base(&refused());
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.source.as_str(), d.plan.as_str(), d.windows.len()), ("", "CACHE", "PLUS", 3));
+        let d = run(-1);
+        assert_eq!((d.status.as_str(), d.hint.as_str(), d.source.as_str()), ("NETWORK", "COULD NOT REACH CHATGPT.COM", "CACHE"));
+        // a cache that is not JSON: no plan, no windows
+        std::fs::write(s.scratch.cache().join("usage-codex.json"), "junk").unwrap();
+        let d = run(270);
+        assert_eq!((d.status.as_str(), d.plan.as_str(), d.windows.len()), ("NO LIMITS IN REPLY", "", 0));
+        drop(s);
+    }
+
+    #[test]
+    fn doctor_reports_the_login_and_probes_when_asked() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("codex-doc");
+        let dir = s.home().join(".codex");
+        let out = capture(|| doctor(""));
+        assert!(out.contains(&format!("  ok       CODEX_HOME={} in this shell", dir.display())), "{out}");
+        assert!(out.contains(&format!("  PROBLEM  no {}: run 'codex login' (or set CODEX_HOME", dir.join("auth.json").display())), "{out}");
+        assert!(out.contains("  ok       codex CLI not on PATH (only needed to log in)\n"), "{out}");
+        assert!(
+            out.contains(
+                "/backend-api/wham/usage\n  usage api\n  PROBLEM  skipped (no usable token)\n  last reply (shape digest)\n  PROBLEM  no reply cached yet\n"
+            ),
+            "{out}"
+        );
+        // an API-key login
+        auth_file(&dir, r#"{"OPENAI_API_KEY": "sk-test-not-a-real-key"}"#);
+        let out = capture(|| doctor(""));
+        assert!(out.contains(": NO PLAN ACCESS (CODEX IS LOGGED IN WITH AN API KEY, NOT A CHATGPT PLAN. RUN: codex login)\n"), "{out}");
+        // a valid login, the CLI on PATH (never run), not probed while the plugin run was fine
+        auth_file(&dir, &valid_auth());
+        s.shim("codex", "true");
+        let out = capture(|| doctor(""));
+        assert!(
+            out.contains(": ChatGPT login, plan plus, account id present, token expires 2100-01-01T00:00:00Z, last refresh 2026-09-08T10:00:00.000Z\n"),
+            "{out}"
+        );
+        assert!(out.contains(&format!("  ok       codex CLI: {}\n", s.bin().join("codex").display())), "{out}");
+        assert!(out.contains("  usage api\n  ok       reached through the plugin (not probed again: keep the calls rare)\n"), "{out}");
+        // backing off: not probed
+        Store::new("codex").set_backoff(180);
+        assert!(capture(|| doctor("RATE LIMITED")).contains("  ok       not probed: backing off after a 429 until "));
+        std::fs::remove_file(s.scratch.cache().join("backoff-codex")).unwrap();
+        // the probe, one answer per call
+        for (code, body, line) in [
+            (200, REPLY, "  ok       HTTP 200: {\"plan_type\":\"plus\",\"primary\":17,\"secondary\":42}\n"),
+            (200, "nope", "  ok       HTTP 200: unexpected JSON shape\n"),
+            (401, "{}", "  PROBLEM  HTTP 401: the token is expired or revoked. Open the Codex CLI once, or run 'codex login'.\n"),
+            (429, "{}", "  PROBLEM  HTTP 429 rate limited: too many usage calls recently."),
+            (503, "down\nnow", "  PROBLEM  HTTP 503: down now\n"),
+        ] {
+            s.codex_base(&serve(code, body));
+            let out = capture(|| doctor("HTTP 503"));
+            assert!(out.contains(line), "{out}");
+        }
+        s.codex_base(&refused());
+        assert!(capture(|| doctor("NETWORK")).contains("  PROBLEM  no answer from chatgpt.com\n"));
+        // the digest after a good reply
+        let mut st = Store::new("codex");
+        fetch(&mut st, &serve(200, REPLY), "tok", "");
+        let out = capture(|| doctor(""));
+        assert!(out.contains("cached reply (0 min old): {\"keys\":\"plan_type,rate_limit,credits,additional_rate_limits\",\"plan_type\":\"plus\",\"primary\":{\"used_percent\":17,"), "{out}");
+        assert!(out.contains("\"extra\":[\"GPT-5.3-Codex-Spark\"]}\n"), "{out}");
         drop(s);
     }
 }
