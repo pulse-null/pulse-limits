@@ -33,8 +33,6 @@ curl -fsSL https://raw.githubusercontent.com/pulse-null/pulse-limits/main/instal
 brew install pulse-null/tap/pulse-limits && pulse-limits install
 ```
 
-By hand, on either platform: `git clone https://github.com/pulse-null/pulse-limits.git && cd pulse-limits && ./build.sh && ./bin/pulse-limits install` (needs cargo).
-
 ## Providers
 
 There is no default. `install` enables the CLIs that have a login on the machine; toggle
