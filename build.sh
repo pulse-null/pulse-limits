@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Compiles the two native helpers (needs the Xcode Command Line Tools: swiftc) and the
-# terminal UI (needs cargo; skipped with a note when it is missing).
+# Builds bin/pulse-limits with cargo (https://rustup.rs) and, on macOS, the two AppKit helpers
+# with swiftc (the Xcode Command Line Tools). Safe to re-run.
 set -eu
 cd "$(dirname "$0")"
 mkdir -p bin
-swiftc -O popover/PulsePopover.swift -o bin/pulse-popover
-swiftc -O menubar/MenuBarImage.swift -o bin/pulse-menubar
-echo "built bin/pulse-popover bin/pulse-menubar"
-# rustup puts cargo in ~/.cargo/bin, which the plugin's fixed PATH does not include
+# rustup puts cargo in ~/.cargo/bin, which a bar's PATH does not include
 export PATH="$HOME/.cargo/bin:$PATH"
-if command -v cargo >/dev/null 2>&1; then
-  cargo build --release --quiet --manifest-path tui/Cargo.toml
-  cp -f tui/target/release/pulse-tui bin/pulse-tui
-  echo "built bin/pulse-tui"
-else
-  echo "cargo not found: the TUI is skipped, install Rust from https://rustup.rs"
+command -v cargo >/dev/null 2>&1 || { echo "cargo not found: install Rust from https://rustup.rs" >&2; exit 1; }
+cargo build --release --quiet
+cp -f target/release/pulse-limits bin/pulse-limits
+echo "built bin/pulse-limits"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  command -v swiftc >/dev/null 2>&1 || { echo "swiftc not found: xcode-select --install" >&2; exit 1; }
+  swiftc -O popover/PulsePopover.swift -o bin/pulse-popover
+  swiftc -O menubar/MenuBarImage.swift -o bin/pulse-menubar
+  echo "built bin/pulse-popover bin/pulse-menubar"
 fi

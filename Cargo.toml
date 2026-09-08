@@ -1,0 +1,25 @@
+[package]
+name = "pulse-limits"
+version = "0.5.0"
+edition = "2021"
+description = "Your Claude and Codex plan limits as a retro patient monitor: the menu bar (SwiftBar), Waybar, and the terminal"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/dnacenta/pulse-limits"
+rust-version = "1.85"
+
+[[bin]]
+name = "pulse-limits"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23"
+crossterm = "0.29"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+# preserve_order: the payload keeps the key order the jq pipeline wrote, so the two are byte-comparable
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[profile.release]
+strip = true
+lto = "thin"
