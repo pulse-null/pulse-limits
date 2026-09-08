@@ -139,8 +139,10 @@ Maintainer only, written down so it happens the same way every time.
 
 1. Bump `version` in `Cargo.toml` and `<swiftbar.version>` in `pulse-limits.1m.sh` and
    `pulse-limits.5m.sh`; run the four checks; commit `chore(release): X.Y.Z`.
-2. Tag `vX.Y.Z` once and push. Never move a tag: GitHub caches the archive per tag name
-   and the Homebrew checksum would then match the wrong commit. Cut a new tag instead.
+2. Tag `vX.Y.Z` once and push, then `gh release create vX.Y.Z --generate-notes` so the
+   release badge and the Releases page follow. Never move a tag: GitHub caches the
+   archive per tag name and the Homebrew checksum would then match the wrong commit. Cut
+   a new tag instead.
 3. Download the tag tarball, check that its embedded commit is the tag's, and put its
    `sha256` in `Formula/pulse-limits.rb`; commit `chore(formula): sha256 for vX.Y.Z`.
 4. Copy the formula into `pulse-null/homebrew-tap` and push; `brew fetch --force

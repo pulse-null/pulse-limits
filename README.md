@@ -5,6 +5,16 @@
 <h1 align="center">PulseLimits</h1>
 
 <p align="center">
+  <a href="https://github.com/pulse-null/pulse-limits/releases"><img src="https://img.shields.io/github/v/release/pulse-null/pulse-limits?label=release&color=2ea44f" alt="latest release"></a>
+  <a href="https://github.com/pulse-null/pulse-limits/actions/workflows/ci.yml"><img src="https://github.com/pulse-null/pulse-limits/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://coveralls.io/github/pulse-null/pulse-limits?branch=main"><img src="https://coveralls.io/repos/github/pulse-null/pulse-limits/badge.svg?branch=main" alt="coverage"></a>
+  <img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fpulse-null%2Fpulse-limits%2Fmain%2FCargo.toml&query=%24.package.rust-version&label=rust&prefix=%E2%89%A5%20&color=dea584" alt="rust version">
+  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-informational" alt="platforms">
+  <a href="https://github.com/pulse-null/homebrew-tap"><img src="https://img.shields.io/badge/brew-pulse--null%2Ftap-fbb040?logo=homebrew&logoColor=white" alt="homebrew tap"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/pulse-null/pulse-limits?color=blue" alt="license"></a>
+</p>
+
+<p align="center">
   Your AI plan limits, Grok, Claude and Codex, in your status bar and in your terminal,
   as a retro patient monitor.
 </p>
