@@ -1,32 +1,27 @@
 //! PulseLimits in the terminal: the monitor of panel.html as a ratatui screen.
 //!
-//!   pulse-tui [claude] [--theme NAME]      (`pulse-limits tui` and `pulse-limits claude` run this)
+//!   pulse-limits tui [claude|codex] [--theme NAME]      (`pulse-limits claude` and `codex` are the same)
 //!
-//! Every 5 s it reads the payload the plugin last wrote for the panel
-//! (`~/.cache/pulse-limits/panel.url`, a `file://…#base64-JSON` line the menu bar
-//! rewrites every minute, estimate included): no process, no API call. Every 120 s,
-//! as the popover does, it runs `pulse-limits.1m.sh --payload` itself, which is what
-//! feeds a box with no menu bar; the plugin keeps its own API throttle. Activity comes
-//! from `bin/pulse-popover --activity` (or the Python port) every 2 s. It draws what the
-//! panel draws: the ECG whose rate follows the tokens per minute, the session percentage
-//! in big digits, the other windows as bars, twelve hours of history as a sparkline.
-//! Meant for a tmux pane or a tiling-WM tile; degrades down to about 40x12. Never
-//! touches the network itself.
+//! Every 5 s it reads the payload the bar last wrote for the panel
+//! (`~/.cache/pulse-limits/panel.url`, a `file://…#base64-JSON` line the menu bar rewrites
+//! every minute, estimate included): a file read, no API call. Every 120 s, as the popover does,
+//! it builds the payload itself, in process, which is what feeds a box with no bar; the
+//! providers keep their own API throttle. Activity is measured every 2 s, in process. It draws
+//! what the panel draws: the ECG whose rate follows the tokens per minute, the session
+//! percentage in big digits, the other windows as bars, twelve hours of history as a
+//! sparkline. Meant for a tmux pane or a tiling-WM tile; degrades down to about 40x12.
 //!
-//! The plugin's folder comes from `PULSE_LIB` (the CLI sets it) or is the parent of the
-//! folder this binary sits in (`$LIB/bin/pulse-tui`). The cache is
-//! `$XDG_CACHE_HOME/pulse-limits`, default `~/.cache/pulse-limits`.
+//! With a provider named, it shows that provider whether or not the bar does, and leaves
+//! panel.url alone.
 //!
 //! Keys: q quit, t next theme, r re-read the payload now, ? help.
 
-use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Rect};
@@ -38,9 +33,13 @@ use ratatui::widgets::{Block, Clear, LineGauge, Paragraph, Sparkline, SparklineB
 use ratatui::{DefaultTerminal, Frame};
 use serde_json::{Map, Value};
 
-const THEMES: [&str; 5] = ["crt", "modern", "cyber", "synth", "analog"];
+use crate::activity;
+use crate::payload::{self, PANEL_INTERVAL};
+use crate::providers;
+use crate::util::{base64_decode, cache_dir, config_dir, epoch_of_f, fmt_k, hhmm, local_offset, mtime_f, now_f, short, span, THEMES};
+
 const PANEL_EVERY: Duration = Duration::from_secs(5); // panel.url: a file read, decoded only when its mtime moved
-const PAYLOAD_EVERY: Duration = Duration::from_secs(120); // `--payload` runs, as the popover does; the plugin throttles the API
+const PAYLOAD_EVERY: Duration = Duration::from_secs(120); // the payload is built in process, as the popover runs it; the providers throttle the API
 const ACTIVITY_EVERY: Duration = Duration::from_secs(2); // as the popover does
 const FRAME: Duration = Duration::from_millis(50); // ~20 fps; ratatui only sends what changed
 const SWEEP: f64 = 3.7; // s for the trace to cross the screen, like the panel (336 px at 90 px/s)
@@ -68,154 +67,16 @@ fn glyph(c: char) -> &'static [&'static str; 5] {
     FONT.iter().find(|(k, _)| *k == c).map(|(_, g)| g).unwrap_or(&FONT[11].1)
 }
 
-// ---- formatting, as in panel.html --------------------------------------------------------
 fn rnd(x: f64) -> i64 {
     (x + 0.5).floor() as i64
 }
 
-fn span(s: f64) -> String {
-    // seconds -> "2H 13M" / "4D 07H" / "38M"
-    let s = s.max(0.0) as i64;
-    let (d, h, m) = (s / 86400, s % 86400 / 3600, s % 3600 / 60);
-    if d > 0 {
-        format!("{d}D {h:02}H")
-    } else if h > 0 {
-        format!("{h}H {m:02}M")
-    } else {
-        format!("{m}M")
-    }
-}
-
-fn short(s: f64) -> String {
-    // seconds -> "27S" / "45M" / "3H" / "2D"
-    let s = s.max(0.0) as i64;
-    if s < 60 {
-        format!("{s}S")
-    } else if s < 3600 {
-        format!("{}M", s / 60)
-    } else if s < 86400 {
-        format!("{}H", s / 3600)
-    } else {
-        format!("{}D", s / 86400)
-    }
-}
-
-fn fmt_k(n: f64) -> String {
-    if n >= 10000.0 {
-        format!("{:.0}K", n / 1000.0)
-    } else if n >= 1000.0 {
-        format!("{:.1}K", n / 1000.0)
-    } else {
-        format!("{}", n as i64)
-    }
-}
-
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
-}
-
-/// ISO-8601 ("2026-09-08T13:40:00.125007+00:00", "...Z") -> epoch seconds. std has no date parsing.
-fn epoch_of(ts: &str) -> Option<f64> {
-    let b = ts.as_bytes();
-    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
-        return None;
-    }
-    let num = |a: usize, z: usize| ts.get(a..z)?.parse::<i64>().ok();
-    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
-    let (h, mi, s) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    let mut rest = &ts[19..];
-    if rest.starts_with('.') {
-        rest = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    }
-    let offset = match rest {
-        "" | "Z" => 0,
-        tz if tz.starts_with('+') || tz.starts_with('-') => {
-            let digits: String = tz[1..].chars().filter(|c| c.is_ascii_digit()).collect();
-            if digits.len() != 4 {
-                return None;
-            }
-            let sign = if tz.starts_with('+') { 1 } else { -1 };
-            sign * (digits[..2].parse::<i64>().ok()? * 3600 + digits[2..].parse::<i64>().ok()? * 60)
-        }
-        _ => return None,
-    };
-    Some((days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - offset) as f64)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    // Howard Hinnant's algorithm: proleptic Gregorian date -> days since 1970-01-01
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-/// Local UTC offset in seconds, from `date +%z`: std knows nothing about time zones.
-fn local_offset() -> i64 {
-    let out = Command::new("date").arg("+%z").stdin(Stdio::null()).output().ok();
-    let s = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() != 4 {
-        return 0;
-    }
-    let sign = if s.starts_with('-') { -1 } else { 1 };
-    sign * (digits[..2].parse::<i64>().unwrap_or(0) * 3600 + digits[2..].parse::<i64>().unwrap_or(0) * 60)
-}
-
-fn hhmm(epoch: f64, offset: i64) -> String {
-    let t = epoch as i64 + offset;
-    format!("{:02}:{:02}", t.rem_euclid(86400) / 3600, t.rem_euclid(3600) / 60)
-}
-
-fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
-    match env::var_os(var) {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(fallback),
-    }
-    .join("pulse-limits")
-}
-
-fn config_dir() -> PathBuf {
-    xdg_dir("XDG_CONFIG_HOME", ".config")
-}
-
-fn cache_dir() -> PathBuf {
-    xdg_dir("XDG_CACHE_HOME", ".cache")
-}
-
-fn mtime(p: &Path) -> Option<SystemTime> {
-    p.metadata().and_then(|m| m.modified()).ok()
+    now_f()
 }
 
 fn age_of(p: &Path) -> Option<Duration> {
-    mtime(p).and_then(|m| SystemTime::now().duration_since(m).ok())
-}
-
-/// Standard base64 with `=` padding, as `base64 | tr -d '\n'` writes it. Lenient on whitespace.
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut buf, mut bits) = (0u32, 0u32);
-    for c in s.bytes() {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' | b'\n' | b'\r' | b' ' => continue,
-            _ => return None,
-        };
-        buf = (buf << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
+    mtime_f(p).map(|m| Duration::from_secs_f64((now() - m).max(0.0)))
 }
 
 fn saved_theme() -> usize {
@@ -223,160 +84,79 @@ fn saved_theme() -> usize {
     THEMES.iter().position(|n| *n == t.trim()).unwrap_or(0)
 }
 
-// ---- data: the plugin and the activity helper, off the drawing thread ---------------------
+// ---- data: the payload and the activity, off the drawing thread ----------------------------
 #[derive(Default)]
 struct Shared {
     payload: Option<Value>,
-    error: Option<(String, String)>, // (status, hint) when the plugin itself fails
     activity: Option<Value>,
     version: u64, // bumped on every change
 }
 
 struct Feed {
     shared: Arc<Mutex<Shared>>,
-    poke: Arc<AtomicBool>, // the r key: re-read panel.url now, and run `--payload` only if that is stale
-    activity_cmd: Option<Vec<String>>,
+    poke: Arc<AtomicBool>, // the r key: re-read panel.url now, and rebuild the payload only if that is stale
     panel_url: PathBuf,
+    provider: Option<String>, // named on the command line: no panel.url, our own builds only
 }
 
 impl Feed {
-    fn start(lib: &Path) -> Feed {
-        let plugin = lib.join("pulse-limits.1m.sh");
+    fn start(provider: Option<String>) -> Feed {
         let panel_url = cache_dir().join("panel.url");
-        let activity_cmd = activity_cmd(lib);
         let shared = Arc::new(Mutex::new(Shared::default()));
         let poke = Arc::new(AtomicBool::new(false));
-        let (s, p, act, url) = (shared.clone(), poke.clone(), activity_cmd.clone(), panel_url.clone());
+        let (s, p, url, prov) = (shared.clone(), poke.clone(), panel_url.clone(), provider.clone());
         thread::spawn(move || {
-            let stale = |url: &Path| age_of(url).is_none_or(|a| a > PAYLOAD_EVERY);
-            let publish = |r: Result<Value, (String, String)>| {
+            let stale = |url: &Path| prov.is_some() || age_of(url).is_none_or(|a| a > PAYLOAD_EVERY);
+            let publish = |v: Value| {
                 let mut s = s.lock().unwrap();
-                match r {
-                    Ok(v) => {
-                        s.payload = Some(v);
-                        s.error = None;
-                    }
-                    Err(e) => s.error = Some(e),
-                }
+                s.payload = Some(v);
                 s.version += 1;
             };
             let mut seen_mtime = None;
             let mut next_panel = Instant::now();
-            // a fresh panel.url means a menu bar is feeding it: no need to run the plugin ourselves yet
+            // a fresh panel.url means a bar is feeding it: no need to build the payload ourselves yet
             let mut next_payload = if stale(&url) { Instant::now() } else { Instant::now() + PAYLOAD_EVERY };
             let mut next_activity = Instant::now();
             loop {
                 let poked = p.swap(false, Ordering::Relaxed);
-                if poked || Instant::now() >= next_panel {
+                if prov.is_none() && (poked || Instant::now() >= next_panel) {
                     next_panel = Instant::now() + PANEL_EVERY;
-                    let m = mtime(&url);
+                    let m = mtime_f(&url);
                     if m.is_some() && (poked || m != seen_mtime) {
                         seen_mtime = m;
                         if let Some(v) = read_panel_url(&url) {
-                            publish(Ok(v));
+                            publish(v);
                         }
                     }
-                    if poked && stale(&url) {
-                        next_payload = Instant::now();
-                    }
+                }
+                if poked && stale(&url) {
+                    next_payload = Instant::now();
                 }
                 if Instant::now() >= next_payload {
                     next_payload = Instant::now() + PAYLOAD_EVERY;
-                    publish(run_payload(&plugin));
+                    let b = payload::build(PANEL_INTERVAL, prov.is_none(), prov.as_deref());
+                    publish(b.payload);
                 }
-                if let Some(cmd) = &act {
-                    if Instant::now() >= next_activity {
-                        next_activity = Instant::now() + ACTIVITY_EVERY;
-                        if let Some(a) = run_activity(cmd) {
-                            let mut s = s.lock().unwrap();
-                            s.activity = Some(a);
-                            s.version += 1;
-                        }
-                    }
+                if Instant::now() >= next_activity {
+                    next_activity = Instant::now() + ACTIVITY_EVERY;
+                    let a = activity::measure().to_json();
+                    let mut s = s.lock().unwrap();
+                    s.activity = Some(a);
+                    s.version += 1;
                 }
                 thread::sleep(Duration::from_millis(250));
             }
         });
-        Feed { shared, poke, activity_cmd, panel_url }
+        Feed { shared, poke, panel_url, provider }
     }
 }
 
-/// The payload the plugin last packed for the panel: `file://…/panel.html#<base64 JSON>`.
+/// The payload the bar last packed for the panel: `file://…/panel.html#<base64 JSON>`.
 fn read_panel_url(p: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(p).ok()?;
     let (_, b64) = text.trim().rsplit_once('#')?;
     let v: Value = serde_json::from_slice(&base64_decode(b64)?).ok()?;
     v.get("windows")?.as_array()?;
-    Some(v)
-}
-
-fn activity_cmd(lib: &Path) -> Option<Vec<String>> {
-    let native = lib.join("bin").join("pulse-popover");
-    let port = lib.join("bin").join("pulse-activity.py");
-    if is_executable(&native) {
-        Some(vec![native.to_string_lossy().into_owned(), "--activity".into()])
-    } else if port.is_file() {
-        let mut cmd = if is_executable(&port) { vec![] } else { vec!["python3".to_string()] };
-        cmd.push(port.to_string_lossy().into_owned());
-        cmd.push("--activity".into());
-        Some(cmd)
-    } else {
-        None
-    }
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-}
-
-/// Runs a command with no stdin and a deadline; Err carries the last stderr line.
-fn run(cmd: &[String], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out after {}s", timeout.as_secs()));
-            }
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let last = err.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string);
-        return Err(last.unwrap_or_else(|| format!("exit {}", out.status.code().unwrap_or(-1))));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-fn run_payload(plugin: &Path) -> Result<Value, (String, String)> {
-    if !plugin.is_file() {
-        return Err(("NO PLUGIN".into(), format!("LOOKED IN {}", plugin.display())));
-    }
-    let cmd = [plugin.to_string_lossy().into_owned(), "--payload".into()];
-    let out = run(&cmd, Duration::from_secs(60)).map_err(|e| ("PLUGIN ERROR".to_string(), e.to_uppercase()))?;
-    let v: Value = serde_json::from_str(&out).map_err(|_| ("PLUGIN ERROR".to_string(), "NOT JSON".to_string()))?;
-    if v.get("windows").and_then(Value::as_array).is_none() {
-        return Err(("PLUGIN ERROR".into(), "NOT A PAYLOAD".into()));
-    }
-    Ok(v)
-}
-
-fn run_activity(cmd: &[String]) -> Option<Value> {
-    let v: Value = serde_json::from_str(&run(cmd, Duration::from_secs(20)).ok()?).ok()?;
-    v.get("tok_per_min")?.as_f64()?;
     Some(v)
 }
 
@@ -548,37 +328,34 @@ struct App {
     help: bool,
     truecolor: bool,
     tz: i64,
-    lib: PathBuf,
 }
 
 impl App {
     fn apply(&mut self) -> bool {
-        let (payload, error, activity) = {
+        let (payload, activity) = {
             let s = self.feed.shared.lock().unwrap();
             if s.version == self.seen {
                 return false;
             }
             self.seen = s.version;
-            (s.payload.clone(), s.error.clone(), s.activity.clone())
+            (s.payload.clone(), s.activity.clone())
         };
         if let Some(Value::Object(m)) = payload {
             for (k, v) in m {
                 self.d.insert(k, v);
             }
         }
-        if let Some((status, hint)) = error {
-            self.d.insert("status".into(), Value::String(status));
-            self.d.insert("hint".into(), Value::String(hint));
-        }
         let windows: Vec<Win> = self.d.get("windows").and_then(Value::as_array).map(|a| {
             a.iter().filter_map(|w| Some(Win {
                 label: w.get("label")?.as_str()?.to_string(),
                 pct: w.get("pct").and_then(Value::as_f64).unwrap_or(0.0),
-                resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of),
+                resets: w.get("resets").and_then(Value::as_str).and_then(epoch_of_f),
             })).collect()
         }).unwrap_or_default();
-        self.session = windows.iter().find(|w| w.label == "SESSION").cloned();
-        self.others = windows.iter().filter(|w| w.label != "SESSION").cloned().collect();
+        // SESSION is the big number; a provider with no session window (a weekly pool only) shows its first one there
+        let session_i = windows.iter().position(|w| w.label == "SESSION").or(if windows.is_empty() { None } else { Some(0) });
+        self.session = session_i.map(|i| windows[i].clone());
+        self.others = windows.iter().enumerate().filter(|(i, _)| Some(*i) != session_i).map(|(_, w)| w.clone()).collect();
         self.alive = !windows.is_empty();
         self.session_pct = self.session.as_ref().map(|s| rnd(s.pct)).unwrap_or(0);
         self.est = None;
@@ -616,7 +393,7 @@ impl App {
             return 0.0;
         }
         match self.act {
-            None => 60.0, // no helper: a resting pulse
+            None => 60.0, // no reading yet: a resting pulse
             Some((tok, _, _)) if tok > 0.0 => (60.0 + 60.0 * (1.0 + tok / 100.0).log10()).min(180.0),
             Some(_) => 0.0,
         }
@@ -629,9 +406,9 @@ impl App {
     fn activity_label(&self) -> Option<String> {
         let (tok, idle, sessions) = self.act?;
         Some(if tok > 0.0 {
-            format!("{} TOK/MIN{}", fmt_k(tok), if sessions > 1 { format!(" · {sessions} SESSIONS") } else { String::new() })
+            format!("{} TOK/MIN{}", fmt_k(tok as i64), if sessions > 1 { format!(" · {sessions} SESSIONS") } else { String::new() })
         } else {
-            format!("IDLE {}", short(idle))
+            format!("IDLE {}", short(idle as i64))
         })
     }
 
@@ -657,7 +434,7 @@ impl App {
     }
 
     fn reset_text(&self, w: &Win, wide: bool) -> String {
-        let left = w.resets.map(|r| span(r - now())).unwrap_or_else(|| "?".into());
+        let left = w.resets.map(|r| span((r - now()) as i64)).unwrap_or_else(|| "?".into());
         let mut t = if wide { format!("RESET {left}") } else { left };
         if w.label == "SESSION" && self.estimating() {
             t.push_str(if wide { " · EST" } else { "·EST" });
@@ -668,7 +445,7 @@ impl App {
     fn next_reset(&self) -> String {
         let n = now();
         let next = self.session.iter().chain(self.others.iter()).filter_map(|w| w.resets).filter(|r| *r > n).fold(f64::INFINITY, f64::min);
-        if next.is_finite() { hhmm(next, self.tz) } else { "?".into() }
+        if next.is_finite() { hhmm(next as i64, self.tz) } else { "?".into() }
     }
 
     fn buckets(&self, n: usize) -> Vec<f64> {
@@ -823,7 +600,12 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
         "bad" => bold(app.color(p.bad)),
         _ => dim,
     };
-    let plan = app.str("plan");
+    // the plan badge names the provider when more than one is on, as the panel does
+    let mut plan = app.str("plan");
+    let provider = app.str("provider");
+    if !provider.is_empty() && app.d.get("providers").and_then(Value::as_array).is_some_and(|a| a.len() > 1) {
+        plan = if plan.is_empty() { provider.to_ascii_uppercase() } else { format!("{} · {plan}", provider.to_ascii_uppercase()) };
+    }
     let mut right = vec![Span::styled(st.clone(), st_style)];
     if !plan.is_empty() && (w as usize) >= 2 * m as usize + 14 + plan.len() + 2 + st.len() {
         right.insert(0, Span::styled(format!("{plan}  "), bold(app.color(p.accent))));
@@ -931,9 +713,9 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     // footer: freshness, credits, keys
     let status = app.status();
     let (left, left_style) = if !status.is_empty() && app.alive {
-        (format!("? {status} · LAST GOOD {} AGO", short(app.age())), Style::new().fg(app.color(if (t * 2.0) as i64 % 2 == 1 { p.bad } else { p.warn })))
+        (format!("? {status} · LAST GOOD {} AGO", short(app.age() as i64)), Style::new().fg(app.color(if (t * 2.0) as i64 % 2 == 1 { p.bad } else { p.warn })))
     } else if app.alive {
-        (format!("UPDATED {} AGO · NEXT RESET {}", short(app.age()), app.next_reset()), dim)
+        (format!("UPDATED {} AGO · NEXT RESET {}", short(app.age() as i64), app.next_reset()), dim)
     } else {
         (app.str("hint"), dim)
     };
@@ -963,21 +745,19 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
 
 fn render_help(f: &mut Frame, app: &App, p: &Palette) {
     let area = f.area();
-    let activity = match &app.feed.activity_cmd {
-        Some(cmd) => format!("{} every {}s", Path::new(&cmd[0]).strip_prefix(&app.lib).map(|r| r.display().to_string()).unwrap_or_else(|_| cmd[0].clone()), ACTIVITY_EVERY.as_secs()),
-        None => "no helper: resting pulse".to_string(),
+    let source = match &app.feed.provider {
+        Some(prov) => format!("payload   built in process every {}s, for {prov} (panel.url left alone)", PAYLOAD_EVERY.as_secs()),
+        None => format!("payload   {} every {}s\n          built in process every {}s (once now if that file is stale)", app.feed.panel_url.display(), PANEL_EVERY.as_secs(), PAYLOAD_EVERY.as_secs()),
     };
-    let lines = [
+    let mut lines = vec![
         "q   quit".to_string(),
         format!("t   next theme (now {})", THEMES[app.theme]),
         "r   re-read the payload now".to_string(),
         "?   close this help".to_string(),
         String::new(),
-        format!("payload   {} every {}s", app.feed.panel_url.display(), PANEL_EVERY.as_secs()),
-        format!("          pulse-limits.1m.sh --payload every {}s (once now if that file is stale)", PAYLOAD_EVERY.as_secs()),
-        format!("activity  {activity}"),
-        format!("lib       {}", app.lib.display()),
     ];
+    lines.extend(source.lines().map(str::to_string));
+    lines.push(format!("activity  {} every {}s", activity::projects_dir().display(), ACTIVITY_EVERY.as_secs()));
     let w = (lines.iter().map(|s| s.chars().count()).max().unwrap_or(0) as u16 + 4).min(area.width.saturating_sub(2));
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect::new((area.width - w) / 2, (area.height - h) / 2, w, h);
@@ -1025,59 +805,49 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 }
 
 fn usage() -> String {
-    format!("usage: pulse-tui [claude] [--theme {}]\n  q quit, t next theme, r re-read the payload, ? help", THEMES.join("|"))
+    format!("usage: pulse-limits tui [{}] [--theme {}]\n  q quit, t next theme, r re-read the payload, ? help", providers::KNOWN.join("|"), THEMES.join("|"))
 }
 
-fn main() {
-    let mut provider = "claude".to_string();
+/// `pulse-limits tui [provider] [--theme NAME]`; returns the exit code.
+pub fn run(args: &[String]) -> i32 {
+    let mut provider: Option<String> = None;
     let mut theme: Option<usize> = None;
-    let mut args = env::args().skip(1);
+    let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => {
                 println!("{}", usage());
-                return;
+                return 0;
             }
-            "--theme" => match args.next().and_then(|n| THEMES.iter().position(|t| *t == n)) {
+            "--theme" => match args.next().and_then(|n| THEMES.iter().position(|t| t == n)) {
                 Some(i) => theme = Some(i),
                 None => {
-                    eprintln!("pulse-tui: unknown theme (one of: {})", THEMES.join(" "));
-                    std::process::exit(64);
+                    eprintln!("pulse-limits tui: unknown theme (one of: {})", THEMES.join(" "));
+                    return 64;
                 }
             },
             s if s.starts_with("--theme=") => match THEMES.iter().position(|t| *t == &s[8..]) {
                 Some(i) => theme = Some(i),
                 None => {
-                    eprintln!("pulse-tui: unknown theme (one of: {})", THEMES.join(" "));
-                    std::process::exit(64);
+                    eprintln!("pulse-limits tui: unknown theme (one of: {})", THEMES.join(" "));
+                    return 64;
                 }
             },
             s if s.starts_with('-') => {
-                eprintln!("pulse-tui: unknown option {s}\n{}", usage());
-                std::process::exit(64);
+                eprintln!("pulse-limits tui: unknown option {s}\n{}", usage());
+                return 64;
             }
-            s => provider = s.to_string(),
+            s => {
+                if !providers::known(s) {
+                    eprintln!("pulse-limits tui: unknown provider {s} (one of: {})", providers::KNOWN.join(" "));
+                    return 64;
+                }
+                provider = Some(s.to_string());
+            }
         }
     }
-    if provider != "claude" {
-        eprintln!("provider {provider} is not available yet");
-        std::process::exit(2);
-    }
-    let lib = match env::var_os("PULSE_LIB") {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => env::current_exe()
-            .and_then(|p| p.canonicalize())
-            .ok()
-            .and_then(|p| p.parent().and_then(Path::parent).map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from(".")),
-    };
-    let plugin = lib.join("pulse-limits.1m.sh");
-    if !plugin.is_file() {
-        eprintln!("pulse-tui: no plugin at {} (set PULSE_LIB to the folder holding pulse-limits.1m.sh)", plugin.display());
-        std::process::exit(1);
-    }
     let mut app = App {
-        feed: Feed::start(&lib),
+        feed: Feed::start(provider),
         ecg: Ecg::default(),
         d: Map::new(),
         session: None,
@@ -1089,22 +859,22 @@ fn main() {
         seen: 0,
         theme: theme.unwrap_or_else(saved_theme),
         help: false,
-        truecolor: matches!(env::var("COLORTERM").as_deref(), Ok("truecolor") | Ok("24bit")),
+        truecolor: matches!(std::env::var("COLORTERM").as_deref(), Ok("truecolor") | Ok("24bit")),
         tz: local_offset(),
-        lib,
     };
     app.d.insert("status".into(), Value::String("NO DATA".into()));
     let mut terminal = match ratatui::try_init() { // raw mode, alternate screen, and a panic hook that restores both
         Ok(t) => t,
         Err(e) => {
-            eprintln!("pulse-tui: {e} (is this a terminal?)");
-            std::process::exit(1);
+            eprintln!("pulse-limits tui: {e} (is this a terminal?)");
+            return 1;
         }
     };
     let result = run_loop(&mut terminal, &mut app);
     ratatui::restore();
     if let Err(e) = result {
-        eprintln!("pulse-tui: {e}");
-        std::process::exit(1);
+        eprintln!("pulse-limits tui: {e}");
+        return 1;
     }
+    0
 }
