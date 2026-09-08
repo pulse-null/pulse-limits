@@ -5,8 +5,9 @@
 use serde_json::{json, Value};
 
 use crate::payload::Built;
+use crate::providers::{Doc, Window};
 use crate::swiftbar::row;
-use crate::util::{fmt_k, now, round_half_up, short, upper};
+use crate::util::{fmt_k, now, qualified, round_half_up, short, upper};
 
 pub fn class(have_data: bool, s_pct: i64, status: &str) -> &'static str {
     if !have_data {
@@ -36,8 +37,10 @@ pub fn render(b: &Built) -> String {
         tip.push_str(&format!("  ·  {plan}"));
     }
     let a = b.active_doc();
+    let (multi, width) = (b.enabled.len() > 1, if b.enabled.len() > 1 { 14 } else { 8 });
+    let name = |d: &Doc, w: &Window| if multi { qualified(&d.provider, &w.label) } else { w.label.clone() };
     for w in &a.windows {
-        tip.push_str(&format!("\n{}", row(&w.label, round_half_up(w.pct_f()), w.resets.as_deref(), now)));
+        tip.push_str(&format!("\n{}", row(&name(&a, w), round_half_up(w.pct_f()), w.resets.as_deref(), now, width)));
     }
     if let Some(c) = b.payload.get("credits").filter(|c| c.is_object()) {
         tip.push_str(&format!("\nEXTRA    {} {}", c["used"], c["currency"].as_str().unwrap_or("")));
@@ -49,7 +52,7 @@ pub fn render(b: &Built) -> String {
             tip.push_str(&format!("\n? {}", d.status));
         }
         for w in &d.windows {
-            tip.push_str(&format!("\n{}", row(&w.label, round_half_up(w.pct_f()), w.resets.as_deref(), now)));
+            tip.push_str(&format!("\n{}", row(&name(d, w), round_half_up(w.pct_f()), w.resets.as_deref(), now, width)));
         }
     }
     let act = &b.payload["activity"];
@@ -167,7 +170,7 @@ mod tests {
         let b = assemble(docs, vec!["claude".into(), "codex".into()], "claude", "crt", json!({ "tok_per_min": 0, "idle_s": 0, "sessions": 0 }));
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
         let tip = v["tooltip"].as_str().unwrap();
-        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 1M"), "{tip}");
+        assert!(tip.starts_with("PULSE LIMITS  ·  MAX 20X\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nCODEX  ·  PLUS\n? TOKEN EXPIRED\nCODEX WEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nIDLE 0S\nUPDATED 1M"), "{tip}");
         assert!(!tip.contains("GROK"));
         let b = assemble(
             vec![mk("claude", "", "", vec![("SESSION", 17)]), mk("grok", "", "", vec![("WEEK", 90)])],
@@ -177,10 +180,9 @@ mod tests {
             Value::Null,
         );
         let v: Value = serde_json::from_str(&render(&b)).unwrap();
-        assert!(v["tooltip"]
-            .as_str()
-            .unwrap()
-            .starts_with("PULSE LIMITS\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nWEEK     ██████████████████░░  90%   RESETS IN ?\nUPDATED 1M"));
+        assert!(v["tooltip"].as_str().unwrap().starts_with(
+            "PULSE LIMITS\nCLAUDE SESSION ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nGROK\nGROK WEEK      ██████████████████░░  90%   RESETS IN ?\nUPDATED 1M"
+        ));
         // a calibrated estimate moves the number the bar shows: the tooltip says so
         std::fs::create_dir_all(&projects).unwrap();
         std::fs::write(

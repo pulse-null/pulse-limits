@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 
 use crate::payload::Built;
 use crate::providers::KNOWN;
-use crate::util::{bar, countdown, epoch_of, is_executable, now, round_half_up, tone, upper, Tone, THEMES};
+use crate::util::{bar, countdown, epoch_of, is_executable, now, qualified, round_half_up, tone, upper, Tone, THEMES};
 
 // "light,dark" pairs for the text menu
 pub const C_HEAD: &str = "#1c5f8a,#8fd3ff";
@@ -33,10 +33,11 @@ fn line(out: &mut String, title: &str, attrs: &str) {
 }
 
 /// "SESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN 2H 14M"
-pub fn row(label: &str, pct: i64, resets: Option<&str>, now: i64) -> String {
+/// `width` is the label column: 8 for one provider, 14 when the labels carry the provider name.
+pub fn row(label: &str, pct: i64, resets: Option<&str>, now: i64, width: usize) -> String {
     let when = resets.and_then(epoch_of).map(|e| countdown(e, now)).unwrap_or_else(|| "?".into());
-    let name: String = label.chars().take(8).collect();
-    format!("{name:<8} {} {pct:>3}%   RESETS IN {when}", bar(pct, 20))
+    let name: String = label.chars().take(width).collect();
+    format!("{name:<width$} {} {pct:>3}%   RESETS IN {when}", bar(pct, 20))
 }
 
 /// The menu bar image from bin/pulse-menubar: "<width> <height> <base64 png>".
@@ -115,7 +116,8 @@ pub fn render(b: &Built, lib: &Path) -> String {
             line(&mut out, &hint, &format!("{MONO} color={C_DIM}"));
         }
     }
-    // one block per provider: its plan, its error if any, its windows
+    // one block per provider: its plan, its error if any, its windows (named after it when several are on)
+    let multi = b.enabled.len() > 1;
     for d in b.docs.iter().filter(|d| b.enabled.contains(&d.provider)) {
         out.push_str("---\n");
         let mut h = upper(&d.provider);
@@ -131,7 +133,8 @@ pub fn render(b: &Built, lib: &Path) -> String {
         }
         for w in &d.windows {
             let pct = round_half_up(w.pct_f());
-            line(&mut out, &row(&w.label, pct, w.resets.as_deref(), now), &format!("{MONO} color={}", color(tone(pct))));
+            let label = if multi { qualified(&d.provider, &w.label) } else { w.label.clone() };
+            line(&mut out, &row(&label, pct, w.resets.as_deref(), now, if multi { 14 } else { 8 }), &format!("{MONO} color={}", color(tone(pct))));
         }
     }
     out
@@ -163,10 +166,10 @@ mod tests {
     #[test]
     fn rows() {
         let now = 1788874800; // 2026-09-08T13:40:00Z
-        assert_eq!(row("SESSION", 13, Some("2026-09-08T13:47:00.075883+00:00"), now), "SESSION  ███░░░░░░░░░░░░░░░░░  13%   RESETS IN 7M");
-        assert_eq!(row("WEEK", 9, Some("2026-09-09T06:07:00Z"), now), "WEEK     ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN 16H 27M");
-        assert_eq!(row("FABLE", 100, None, now), "FABLE    ████████████████████ 100%   RESETS IN ?");
-        assert_eq!(row("LONGLABELHERE", 0, Some("-"), now), "LONGLABE ░░░░░░░░░░░░░░░░░░░░   0%   RESETS IN ?");
+        assert_eq!(row("SESSION", 13, Some("2026-09-08T13:47:00.075883+00:00"), now, 8), "SESSION  ███░░░░░░░░░░░░░░░░░  13%   RESETS IN 7M");
+        assert_eq!(row("WEEK", 9, Some("2026-09-09T06:07:00Z"), now, 8), "WEEK     ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN 16H 27M");
+        assert_eq!(row("FABLE", 100, None, now, 8), "FABLE    ████████████████████ 100%   RESETS IN ?");
+        assert_eq!(row("LONGLABELHERE", 0, Some("-"), now, 8), "LONGLABE ░░░░░░░░░░░░░░░░░░░░   0%   RESETS IN ?");
     }
 
     #[test]
@@ -201,8 +204,8 @@ PROVIDERS | font=Menlo size=12 trim=false color=#707070,#8C8C8C
 --CODEX | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=true bash={bin} param1=provider param2=codex terminal=false refresh=true
 ---
 CLAUDE  ·  MAX 20X | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
-SESSION  ███░░░░░░░░░░░░░░░░░  13%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
-WEEK     ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
+CLAUDE SESSION ███░░░░░░░░░░░░░░░░░  13%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
+CLAUDE WEEK    ██░░░░░░░░░░░░░░░░░░   9%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F
 ---
 CODEX | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
 NO LOGIN | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C
