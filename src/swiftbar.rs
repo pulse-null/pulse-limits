@@ -181,9 +181,9 @@ THEME  ·  CRT | font=Menlo size=12 trim=false color=#707070,#8C8C8C
 --SYNTH | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=false bash={bin} param1=theme param2=synth terminal=false refresh=true
 --ANALOG | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=false bash={bin} param1=theme param2=analog terminal=false refresh=true
 PROVIDERS | font=Menlo size=12 trim=false color=#707070,#8C8C8C
+--GROK | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=false bash={bin} param1=provider param2=grok terminal=false refresh=true
 --CLAUDE | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=true bash={bin} param1=provider param2=claude terminal=false refresh=true
 --CODEX | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=true bash={bin} param1=provider param2=codex terminal=false refresh=true
---GROK | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F checked=false bash={bin} param1=provider param2=grok terminal=false refresh=true
 ---
 CLAUDE  ·  MAX 20X | font=Menlo size=12 trim=false color=#1c5f8a,#8fd3ff
 SESSION  ███░░░░░░░░░░░░░░░░░  13%   RESETS IN ? | font=Menlo size=12 trim=false color=#1E7F2A,#5FD75F

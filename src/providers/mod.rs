@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::util::{cache_dir, config_dir, mtime, now, read_trimmed, round_half_up, write_atomic};
 
-pub const KNOWN: [&str; 3] = ["claude", "codex", "grok"]; // the name is also the CLI's process name
+pub const KNOWN: [&str; 3] = ["grok", "claude", "codex"]; // the name is also the CLI's process name
 pub const HISTORY_HOURS: i64 = 12; // trend strip depth
 pub const BACKOFF_SECS: i64 = 180; // after a 429: the quotas are small and shared across machines
 
