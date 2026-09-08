@@ -84,6 +84,18 @@ pub fn install(lib: &Path) -> i32 {
             eprintln!("warning: no Claude Code login found ({}). Run 'claude' once and log in; the widget reads that token.", keychain::credential_files()[0].display());
         }
     }
+    // no default provider: the first install enables the CLIs that have a login here
+    let pf = config_dir().join("providers");
+    if !pf.is_file() {
+        let d = crate::providers::detected();
+        let _ = fs::create_dir_all(config_dir());
+        let _ = fs::write(&pf, format!("{}\n", d.join("\n")));
+        if d.is_empty() {
+            eprintln!("no CLI login found on this machine: run grok login, claude or codex login, then: pulse-limits provider NAME");
+        } else {
+            println!("providers enabled from the logins found: {}", d.join(" "));
+        }
+    }
     on(lib)
 }
 

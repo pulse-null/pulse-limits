@@ -76,14 +76,15 @@ By hand, on either platform: `git clone https://github.com/pulse-null/pulse-limi
 
 ## Providers
 
-Enable them from the bar's provider menu or with `pulse-limits provider NAME`. The bar
-shows the first enabled provider whose CLI is running right now, else the first enabled
-one; the monitor and the TUI show all of them.
+There is no default. `install` enables the CLIs that have a login on the machine; toggle
+them from the bar's provider menu or with `pulse-limits provider NAME`. The bar shows the
+first enabled provider whose CLI is running right now, else the first enabled one; the
+monitor and the TUI show all of them.
 
 | Provider | Login it reuses | Where the numbers come from | Windows |
 |---|---|---|---|
 | `grok` | the Grok CLI's, `~/.grok/auth.json` | `cli-chat-proxy.grok.com/v1/billing`, the call the CLI makes for its credit pool; the plan name from `/v1/settings` | the weekly credit pool, on-demand spend when capped |
-| `claude` (default) | Claude Code's, `~/.claude/.credentials.json` on Linux, the Keychain on macOS | `api.anthropic.com/api/oauth/usage`, the call behind `/usage` in Claude Code | 5-hour session, week, per-model weekly caps |
+| `claude` | Claude Code's, `~/.claude/.credentials.json` on Linux, the Keychain on macOS | `api.anthropic.com/api/oauth/usage`, the call behind `/usage` in Claude Code | 5-hour session, week, per-model weekly caps |
 | `codex` | the Codex CLI's, `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage`, the call the CLI makes for its own rate limits | 5-hour, week, per-model extras |
 
 Each provider is asked once every five minutes, backs off three minutes after a 429,

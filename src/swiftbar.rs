@@ -206,7 +206,7 @@ NO CODEX LOGIN ON THIS MAC. RUN: codex login | font=Menlo size=12 trim=false col
         let b = assemble(vec![], vec![], "", "crt", Value::Null);
         let text = render(&b, &lib);
         assert!(text.starts_with("● -- | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C  webview"));
-        assert!(text.contains("\n?NO PROVIDER  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nENABLE ONE: RIGHT-CLICK THE MENU BAR ITEM, PROVIDERS | "));
+        assert!(text.contains("\n?NO PROVIDER  ERROR | font=Menlo size=12 trim=false color=#B71C1C,#FF5C5C\nENABLE ONE: pulse-limits provider grok, claude or codex | "));
         std::env::remove_var("CLAUDE_PROJECTS_DIR");
     }
 }

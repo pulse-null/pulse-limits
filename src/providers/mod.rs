@@ -95,7 +95,7 @@ impl Doc {
             source: String::new(),
             fetched: 0,
             status: "NO PROVIDER".into(),
-            hint: "ENABLE ONE: RIGHT-CLICK THE MENU BAR ITEM, PROVIDERS".into(),
+            hint: "ENABLE ONE: pulse-limits provider grok, claude or codex".into(),
             windows: vec![],
             credits: Value::Null,
             history: vec![],
@@ -113,7 +113,22 @@ pub fn enabled() -> Vec<String> {
     let file = config_dir().join("providers");
     match fs::read_to_string(&file) {
         Ok(text) => text.split_whitespace().filter(|p| known(p)).map(str::to_string).collect(),
-        Err(_) => vec!["claude".into()],
+        Err(_) => detected(),
+    }
+}
+
+/// The CLIs that have a login on this machine, in KNOWN order: what runs while nothing is
+/// configured. There is no default provider; `install` writes this list so the menu shows it.
+pub fn detected() -> Vec<String> {
+    KNOWN.iter().filter(|p| has_login_for(p)).map(|p| p.to_string()).collect()
+}
+
+fn has_login_for(name: &str) -> bool {
+    match name {
+        "grok" => grok::grok_dir().join("auth.json").is_file(),
+        "claude" => crate::keychain::credential_files().iter().any(|f| f.is_file()) || (crate::util::is_macos() && crate::keychain::find_login().is_some()),
+        "codex" => codex::codex_dir().join("auth.json").is_file(),
+        _ => false,
     }
 }
 
@@ -121,7 +136,7 @@ pub fn enabled() -> Vec<String> {
 fn listed() -> Vec<String> {
     match fs::read_to_string(config_dir().join("providers")) {
         Ok(text) => text.split_whitespace().map(str::to_string).collect(),
-        Err(_) => vec!["claude".into()],
+        Err(_) => detected(),
     }
 }
 
@@ -500,6 +515,9 @@ mod tests {
     fn providers_list_and_toggle() {
         let _g = testing::ENV.lock().unwrap_or_else(|e| e.into_inner());
         let _s = testing::Scratch::new("toggle");
+        assert_eq!(enabled(), detected()); // nothing configured: whatever has a login here, no default
+        fs::create_dir_all(config_dir()).unwrap();
+        fs::write(config_dir().join("providers"), "claude\n").unwrap();
         assert_eq!(enabled(), vec!["claude"]);
         assert_eq!(toggle("codex").unwrap(), vec!["claude", "codex"]);
         assert_eq!(enabled(), vec!["claude", "codex"]);
