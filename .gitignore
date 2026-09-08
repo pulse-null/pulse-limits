@@ -1,3 +1,4 @@
 bin/*
 !bin/pulse-activity.py
 .DS_Store
+result
