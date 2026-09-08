@@ -288,3 +288,276 @@ pub fn update(lib: &Path, version: &str) -> i32 {
     }
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::testing::{Scratch, ENV};
+    use crate::util::testing::{calls, fake_bin, pretend, Vars};
+
+    /// Every command the bar code may run, as fakes: `defaults read` answers the scratch
+    /// plugin folder, `pgrep -x NAME` says yes when `bin/running.NAME` exists, the rest log.
+    fn fakes(s: &Scratch) -> (PathBuf, PathBuf) {
+        let bin = s.0.join("bin");
+        let plugins = s.0.join("plugins");
+        fake_bin(&bin, "defaults", &format!("[ \"$1\" = read ] && printf '%s\\n' '{}'; exit 0", plugins.display()));
+        fake_bin(&bin, "open", "");
+        fake_bin(&bin, "pkill", "");
+        fake_bin(&bin, "pgrep", &format!("[ -e '{}/running.'\"$2\" ]", bin.display()));
+        fake_bin(&bin, "security", "exit 1");
+        fake_bin(&bin, "git", "exit 1");
+        fake_bin(&bin, "xdg-open", "");
+        (bin, plugins)
+    }
+
+    /// A lib folder with the shim and, when asked, the two built helpers.
+    fn lib_fixture(s: &Scratch, helpers: bool) -> PathBuf {
+        let lib = s.0.join("lib");
+        fs::create_dir_all(lib.join("bin")).unwrap();
+        fs::write(lib.join(PLUGIN), "#!/bin/bash\n").unwrap();
+        fs::write(lib.join("panel.html"), "x").unwrap();
+        if helpers {
+            fake_bin(&lib.join("bin"), "pulse-popover", "");
+            fake_bin(&lib.join("bin"), "pulse-menubar", "");
+        }
+        lib
+    }
+
+    fn arg(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn install_on_macos() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-install-mac");
+        let (bin, plugins) = fakes(&s);
+        let lib = lib_fixture(&s, true);
+        let app = s.0.join("SwiftBar.app");
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0).set("PULSE_TEST_SWIFTBAR_APP", &app);
+        vars.unset("CODEX_HOME").unset("GROK_HOME").unset("CLAUDE_CONFIG_DIR");
+        let _mac = pretend(true);
+        // SwiftBar missing and no brew: stop before touching anything
+        assert_eq!(install(&lib), 1);
+        assert!(!config_dir().join("providers").exists());
+        // brew there but the cask does not land, or brew says ok and the app is still missing: stop
+        let brew = fake_bin(&bin, "brew", "exit 1");
+        assert_eq!(install(&lib), 1);
+        assert_eq!(calls(&brew), vec!["install --cask swiftbar"]);
+        fake_bin(&bin, "brew", "exit 0");
+        assert_eq!(install(&lib), 1);
+        // brew installs it: on we go. No login anywhere: an empty providers file, SwiftBar started
+        fake_bin(&bin, "brew", "mkdir -p \"$PULSE_TEST_SWIFTBAR_APP\"");
+        assert_eq!(install(&lib), 0);
+        assert!(app.is_dir());
+        assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "\n");
+        let link = plugins.join(PLUGIN);
+        assert_eq!(fs::read_link(&link).unwrap(), lib.join(PLUGIN));
+        assert_eq!(
+            calls(&bin.join("defaults.log")),
+            vec!["read com.ameba.SwiftBar PluginDirectory".to_string(), format!("write com.ameba.SwiftBar PluginDirectory {}", plugins.display())]
+        );
+        assert_eq!(calls(&bin.join("pkill.log")), vec!["-f bin/pulse-popover"]);
+        assert_eq!(calls(&bin.join("open.log")), vec!["-a SwiftBar"]);
+        assert!(!calls(&bin.join("security.log")).is_empty(), "the Keychain was asked for the login");
+        // again: the providers file is kept, the old link name dropped, a running SwiftBar refreshed
+        fs::write(config_dir().join("providers"), "codex\n").unwrap();
+        fs::File::create(bin.join("running.SwiftBar")).unwrap();
+        fs::write(plugins.join(OLD_PLUGIN), "old").unwrap();
+        assert_eq!(install(&lib), 0);
+        assert!(!plugins.join(OLD_PLUGIN).exists());
+        assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "codex\n");
+        assert_eq!(calls(&bin.join("open.log")), vec!["-a SwiftBar", "swiftbar://refreshallplugins"]);
+    }
+
+    #[test]
+    fn install_builds_the_helpers() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-install-build");
+        let (bin, _) = fakes(&s);
+        let lib = lib_fixture(&s, false);
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0).set("PULSE_TEST_SWIFTBAR_APP", &s.0);
+        vars.unset("CODEX_HOME").unset("GROK_HOME").unset("CLAUDE_CONFIG_DIR");
+        let _mac = pretend(true);
+        let build = fake_bin(&lib, "build.sh", "exit 1");
+        assert_eq!(install(&lib), 1);
+        assert_eq!(calls(&build), vec![""]);
+        fake_bin(&lib, "build.sh", "");
+        // a Codex login on this machine: the providers file starts with it
+        fs::create_dir_all(s.0.join(".codex")).unwrap();
+        fs::write(s.0.join(".codex").join("auth.json"), "{}").unwrap();
+        assert_eq!(install(&lib), 0);
+        assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "codex\n");
+        assert_eq!(calls(&build).len(), 2);
+        // uninstall: link gone, cache and settings gone
+        fs::write(cache_dir().join("usage-codex.json"), "{}").unwrap();
+        assert_eq!(uninstall(&lib), 0);
+        assert!(!s.0.join("plugins").join(PLUGIN).exists());
+        assert!(!cache_dir().exists());
+        assert!(!config_dir().exists());
+        assert_eq!(calls(&bin.join("open.log")), vec!["-a SwiftBar", "swiftbar://refreshallplugins"]);
+    }
+
+    #[test]
+    fn on_off_status_on_macos() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-mac");
+        let (bin, plugins) = fakes(&s);
+        let lib = lib_fixture(&s, true);
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0);
+        let _mac = pretend(true);
+        // without the test override the real folder is looked at (read only)
+        assert_eq!(swiftbar_installed(), Path::new("/Applications/SwiftBar.app").is_dir());
+        assert_eq!(bar(&lib, None), 1, "status: nothing linked");
+        assert_eq!(bar(&lib, arg("status").as_ref()), 1);
+        assert_eq!(bar(&lib, arg("on").as_ref()), 0);
+        let link = plugins.join(PLUGIN);
+        assert_eq!(fs::read_link(&link).unwrap(), lib.join(PLUGIN));
+        assert_eq!(bar(&lib, arg("status").as_ref()), 0, "linked, SwiftBar not running");
+        fs::File::create(bin.join("running.SwiftBar")).unwrap();
+        assert_eq!(status(&lib), 0, "linked, SwiftBar running");
+        // a dangling link is off
+        fs::remove_file(lib.join(PLUGIN)).unwrap();
+        assert_eq!(status(&lib), 1);
+        fs::write(lib.join(PLUGIN), "#!/bin/bash\n").unwrap();
+        assert_eq!(status(&lib), 0);
+        assert_eq!(bar(&lib, arg("off").as_ref()), 0);
+        assert!(!link.exists());
+        assert_eq!(status(&lib), 1);
+        assert_eq!(bar(&lib, arg("nope").as_ref()), 64);
+        assert_eq!(calls(&bin.join("pkill.log")), vec!["-f bin/pulse-popover", "-f bin/pulse-popover"]);
+        assert_eq!(calls(&bin.join("open.log")), vec!["-a SwiftBar", "swiftbar://refreshallplugins"]);
+        // no answer from defaults, or an empty one: the default plugin folder under HOME
+        fake_bin(&bin, "defaults", "exit 1");
+        assert_eq!(plugin_dir(), s.0.join(".config").join("swiftbar").join("plugins"));
+        fake_bin(&bin, "defaults", "[ \"$1\" = read ] && echo; exit 0");
+        assert_eq!(plugin_dir(), s.0.join(".config").join("swiftbar").join("plugins"));
+        assert_eq!(on(&lib), 0);
+        assert!(s.0.join(".config").join("swiftbar").join("plugins").join(PLUGIN).is_symlink());
+        // a file where the plugin folder should be: the link cannot be made
+        let blocked = s.0.join("blocked");
+        fs::write(&blocked, "x").unwrap();
+        fake_bin(&bin, "defaults", &format!("[ \"$1\" = read ] && printf '%s\\n' '{}'; exit 0", blocked.display()));
+        assert_eq!(on(&lib), 1);
+    }
+
+    #[test]
+    fn on_off_status_on_linux() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-linux");
+        let (bin, _) = fakes(&s);
+        let lib = lib_fixture(&s, false);
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0);
+        let _linux = pretend(false);
+        assert_eq!(waybar_dir(), s.0.join("config").join("waybar"));
+        vars.set("XDG_CONFIG_HOME", "");
+        assert_eq!(waybar_dir(), s.0.join(".config").join("waybar"));
+        vars.set("XDG_CONFIG_HOME", s.0.join("config"));
+        let module = waybar_module();
+        assert_eq!(module, s.0.join("config").join("waybar").join("pulse-limits.jsonc"));
+        assert_eq!(bar(&lib, None), 1, "status: no module file");
+        assert_eq!(bar(&lib, arg("on").as_ref()), 0);
+        let text = fs::read_to_string(&module).unwrap();
+        let exe = env::current_exe().unwrap().canonicalize().unwrap();
+        assert!(text.contains(&format!("\"exec\": \"'{}' waybar\",\n", exe.display())), "{text}");
+        assert!(text.contains(&format!("\"on-click\": \"'{}' open\",\n", exe.display())));
+        assert!(text.contains("\"custom/pulse-limits\": {\n") && text.contains("\"signal\": 8,\n"));
+        // by name when pulse-limits on PATH is this very binary
+        std::os::unix::fs::symlink(&exe, bin.join("pulse-limits")).unwrap();
+        assert_eq!(on(&lib), 0);
+        let text = fs::read_to_string(&module).unwrap();
+        assert!(text.contains("\"exec\": \"pulse-limits waybar\",\n") && text.contains("\"on-click\": \"pulse-limits open\",\n"), "{text}");
+        assert_eq!(status(&lib), 0, "module there, waybar not running");
+        fs::File::create(bin.join("running.waybar")).unwrap();
+        assert_eq!(status(&lib), 0);
+        refresh();
+        assert_eq!(calls(&bin.join("pkill.log")), vec!["-RTMIN+8 waybar"]);
+        assert_eq!(bar(&lib, arg("off").as_ref()), 0);
+        assert!(!module.exists());
+        assert_eq!(status(&lib), 1);
+        assert_eq!(uninstall(&lib), 0);
+        assert!(!cache_dir().exists() && !config_dir().exists());
+        // a file where the waybar folder should be: the module cannot be written
+        fs::remove_dir_all(waybar_dir()).unwrap();
+        fs::write(waybar_dir(), "x").unwrap();
+        assert_eq!(on(&lib), 1);
+    }
+
+    #[test]
+    fn install_on_linux() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-install-linux");
+        let (bin, _) = fakes(&s);
+        let lib = lib_fixture(&s, false);
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0);
+        vars.unset("CODEX_HOME").unset("GROK_HOME").unset("CLAUDE_CONFIG_DIR");
+        let _linux = pretend(false);
+        // no waybar, no login: warnings only; the module lands, no provider enabled
+        assert_eq!(install(&lib), 0);
+        assert!(waybar_module().is_file());
+        assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "\n");
+        assert!(calls(&bin.join("security.log")).is_empty(), "Linux never asks the Keychain");
+        // waybar on PATH and a Claude login file: enabled from the start
+        fake_bin(&bin, "waybar", "");
+        fs::remove_file(config_dir().join("providers")).unwrap();
+        fs::create_dir_all(s.0.join(".claude")).unwrap();
+        fs::write(s.0.join(".claude").join(".credentials.json"), "{\"claudeAiOauth\":{\"accessToken\":\"t\"}}").unwrap();
+        fs::create_dir_all(s.0.join(".grok")).unwrap();
+        fs::write(s.0.join(".grok").join("auth.json"), "{}").unwrap();
+        assert_eq!(install(&lib), 0);
+        assert_eq!(fs::read_to_string(config_dir().join("providers")).unwrap(), "grok\nclaude\n");
+    }
+
+    #[test]
+    fn update_paths() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("bar-update");
+        let (bin, _) = fakes(&s);
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0);
+        let _mac = pretend(true);
+        // Nix and a copied folder: told how, nothing run
+        assert_eq!(update(Path::new("/nix/store/abc-pulse-limits/libexec/pulse-limits"), "v0.5.6"), 1);
+        let copied = s.0.join("copied");
+        fs::create_dir_all(&copied).unwrap();
+        assert_eq!(update(&copied, "v0.5.6"), 1);
+        assert!(!bin.join("brew.log").exists() && !bin.join("git.log").exists() && !bin.join("pkill.log").exists());
+        // Homebrew: brew upgrade, then the new binary relinks and reports its version
+        let opt = s.0.join("opt").join("pulse-limits").join("libexec");
+        let newbin = fake_bin(&opt.join("bin"), "pulse-limits", "[ \"$1\" = version ] && printf 'v9.9.9\\n'; exit 0");
+        let brew = fake_bin(&bin, "brew", "exit 1");
+        assert_eq!(update(&opt, "v0.5.6"), 1);
+        assert_eq!(calls(&brew), vec!["upgrade pulse-null/tap/pulse-limits"]);
+        assert!(!newbin.exists());
+        fake_bin(&bin, "brew", "");
+        fs::write(cache_dir().join("popover.pid"), "1").unwrap();
+        fs::write(cache_dir().join("popover.closed"), "1").unwrap();
+        assert_eq!(update(&opt, "v0.5.6"), 0);
+        assert!(!cache_dir().join("popover.pid").exists() && !cache_dir().join("popover.closed").exists());
+        assert_eq!(calls(&newbin), vec!["install", "version"]);
+        assert_eq!(calls(&bin.join("pkill.log")), vec!["-f bin/pulse-popover"]);
+        assert_eq!(update(&opt, "v9.9.9"), 0, "already up to date");
+        let cellar = s.0.join("Cellar").join("pulse-limits").join("0.5.6").join("libexec");
+        fake_bin(&cellar.join("bin"), "pulse-limits", "");
+        assert_eq!(update(&cellar, "v0.5.6"), 0);
+        // a git checkout: pull, build, relink
+        let co = s.0.join("checkout");
+        fs::create_dir_all(co.join(".git")).unwrap();
+        let git = fake_bin(&bin, "git", "exit 1");
+        assert_eq!(update(&co, "v0.5.6"), 1);
+        assert_eq!(calls(&git), vec![format!("-C {} pull --ff-only", co.display())]);
+        fake_bin(&bin, "git", "");
+        let build = fake_bin(&co, "build.sh", "exit 1");
+        assert_eq!(update(&co, "v0.5.6"), 1);
+        fake_bin(&co, "build.sh", "");
+        let cobin = fake_bin(&co.join("bin"), "pulse-limits", "[ \"$1\" = version ] && printf 'v0.5.6\\n'; exit 0");
+        assert_eq!(update(&co, "v0.5.6"), 0);
+        assert_eq!(calls(&build), vec!["", ""]);
+        assert_eq!(calls(&cobin), vec!["install", "version"]);
+    }
+}

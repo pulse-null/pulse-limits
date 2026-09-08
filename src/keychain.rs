@@ -140,10 +140,12 @@ pub fn find_login() -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::testing::{Scratch, ENV};
+    use crate::util::testing::{calls, fake_bin, pretend, Vars};
+    use std::fs;
+    use std::path::Path;
 
-    #[test]
-    fn dump_parsing() {
-        let text = r#"keychain: "/Users/x/Library/Keychains/login.keychain-db"
+    const DUMP: &str = r#"keychain: "/Users/x/Library/Keychains/login.keychain-db"
 version: 512
 class: "genp"
 attributes:
@@ -165,7 +167,39 @@ attributes:
     "labl"<blob>="claude work"
     "svce"<blob>="Claude Code-credentials-work"
 "#;
-        let items = parse_dump(text);
+
+    /// A `security` that dumps `dir/dump.txt` and answers `find-generic-password -s S [-a A] -w`
+    /// from `dir/secrets/S[@A]`; anything else fails.
+    fn fake_security(dir: &Path) -> PathBuf {
+        fake_bin(
+            dir,
+            "security",
+            &format!(
+                r#"case "$1" in
+  dump-keychain) cat '{d}/dump.txt' ;;
+  find-generic-password) shift; svc=; acct=
+    while [ $# -gt 0 ]; do case "$1" in -s) svc="$2"; shift ;; -a) acct="$2"; shift ;; esac; shift; done
+    f='{d}/secrets/'"$svc${{acct:+@$acct}}"
+    [ -f "$f" ] || exit 44
+    cat "$f" ;;
+  *) exit 1 ;;
+esac"#,
+                d = dir.display()
+            ),
+        )
+    }
+
+    fn token(v: &Value) -> String {
+        v["claudeAiOauth"]["accessToken"].as_str().unwrap_or("").to_string()
+    }
+
+    fn login(t: &str) -> String {
+        format!("{{\"claudeAiOauth\":{{\"accessToken\":\"{t}\"}}}}")
+    }
+
+    #[test]
+    fn dump_parsing() {
+        let items = parse_dump(DUMP);
         assert_eq!(
             items,
             vec![
@@ -176,5 +210,109 @@ attributes:
         assert!(has_login(&serde_json::json!({"claudeAiOauth": {"accessToken": "t"}})));
         assert!(!has_login(&serde_json::json!({"claudeAiOauth": {"accessToken": ""}})));
         assert!(!has_login(&serde_json::json!({"other": 1})));
+        assert_eq!(parse("[1]"), None, "a document is an object");
+        assert_eq!(parse("{"), None);
+        assert_eq!(dedup(vec![Item { service: String::new(), account: "x".into(), modified: String::new() }]), vec![]);
+    }
+
+    #[test]
+    fn keychain_commands() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("keychain-cmd");
+        let bin = s.0.join("bin");
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0);
+        {
+            let _linux = pretend(false);
+            assert_eq!(dump(), vec![]);
+            assert_eq!(read_item(SERVICE, ""), None);
+        }
+        let _mac = pretend(true);
+        assert_eq!(dump(), vec![], "no security on PATH");
+        let log = fake_security(&bin);
+        fs::write(bin.join("dump.txt"), DUMP).unwrap();
+        assert_eq!(dump().len(), 2);
+        fs::create_dir_all(bin.join("secrets")).unwrap();
+        fs::write(bin.join("secrets").join("Claude Code-credentials@user"), format!("{}\r\n", login("t"))).unwrap();
+        assert_eq!(read_item(SERVICE, "user"), Some(login("t")));
+        assert_eq!(read_item(SERVICE, ""), None, "no such item");
+        assert_eq!(
+            calls(&log),
+            vec!["dump-keychain", "find-generic-password -s Claude Code-credentials -a user -w", "find-generic-password -s Claude Code-credentials -w"]
+        );
+    }
+
+    #[test]
+    fn login_search_order() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Scratch::new("keychain-login");
+        let bin = s.0.join("bin");
+        let mut vars = Vars::default();
+        vars.set("PATH", &bin).set("HOME", &s.0).unset("CLAUDE_CONFIG_DIR");
+        let _mac = pretend(true);
+        let log = fake_security(&bin);
+        fs::write(bin.join("dump.txt"), DUMP).unwrap();
+        let secrets = bin.join("secrets");
+        fs::create_dir_all(&secrets).unwrap();
+        fs::create_dir_all(config_dir()).unwrap();
+        assert_eq!(pin(), None);
+        fs::write(config_dir().join("keychain"), "\n").unwrap();
+        assert_eq!(pin(), None);
+        fs::write(config_dir().join("keychain"), "Pinned\n").unwrap();
+        assert_eq!(pin(), Some("Pinned".into()));
+        let names = |items: Vec<Item>| items.iter().map(|i| format!("{}@{}", i.service, i.account)).collect::<Vec<_>>();
+        assert_eq!(names(candidates()), vec!["Pinned@", "Claude Code-credentials@", "Claude Code-credentials@user", "Claude Code-credentials-work@work"]);
+        assert_eq!(find_login(), None, "nothing readable anywhere");
+        // the pinned item is unreadable, the default has no login, a scanned one is not JSON, the last has it
+        fs::write(secrets.join("Claude Code-credentials"), login("")).unwrap();
+        fs::write(secrets.join("Claude Code-credentials@user"), "not json").unwrap();
+        fs::write(secrets.join("Claude Code-credentials-work@work"), login("work")).unwrap();
+        assert_eq!(token(&find_login().unwrap()), "work");
+        let all = calls(&log);
+        assert_eq!(
+            all[all.len() - 5..].to_vec(),
+            vec![
+                "dump-keychain",
+                "find-generic-password -s Pinned -w",
+                "find-generic-password -s Claude Code-credentials -w",
+                "find-generic-password -s Claude Code-credentials -a user -w",
+                "find-generic-password -s Claude Code-credentials-work -a work -w",
+            ]
+        );
+        // the pin wins once it reads
+        fs::write(secrets.join("Pinned"), login("pinned")).unwrap();
+        assert_eq!(token(&find_login().unwrap()), "pinned");
+        // a pin equal to the default name is listed once
+        fs::write(config_dir().join("keychain"), format!("{SERVICE}\n")).unwrap();
+        assert_eq!(names(candidates()).len(), 3);
+        // the files come after the Keychain: the configured folder first, then ~/.claude
+        fs::remove_dir_all(&secrets).unwrap();
+        fs::create_dir_all(&secrets).unwrap();
+        fs::write(bin.join("dump.txt"), "").unwrap();
+        assert_eq!(find_login(), None);
+        let cfg = s.0.join("cfg");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(s.0.join(".claude")).unwrap();
+        let default = s.0.join(".claude").join(".credentials.json");
+        assert_eq!(credential_files(), vec![default.clone()]);
+        fs::write(&default, login("home")).unwrap();
+        assert_eq!(token(&find_login().unwrap()), "home");
+        vars.set("CLAUDE_CONFIG_DIR", &cfg);
+        assert_eq!(credential_files(), vec![cfg.join(".credentials.json"), default.clone()]);
+        assert_eq!(token(&find_login().unwrap()), "home", "no file in the configured folder yet");
+        fs::write(cfg.join(".credentials.json"), login("")).unwrap();
+        assert_eq!(token(&find_login().unwrap()), "home", "a configured file without a login falls through");
+        fs::write(cfg.join(".credentials.json"), login("cfg")).unwrap();
+        assert_eq!(token(&find_login().unwrap()), "cfg");
+        vars.set("CLAUDE_CONFIG_DIR", s.0.join(".claude"));
+        assert_eq!(credential_files(), vec![default.clone()], "the configured folder is the default one");
+        vars.set("CLAUDE_CONFIG_DIR", "");
+        assert_eq!(credential_files(), vec![default], "empty is unset");
+        // Linux: the Keychain is never asked
+        drop(_mac);
+        let _linux = pretend(false);
+        let before = calls(&log).len();
+        assert_eq!(token(&find_login().unwrap()), "home");
+        assert_eq!(calls(&log).len(), before);
     }
 }
