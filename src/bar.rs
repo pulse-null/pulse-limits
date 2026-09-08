@@ -46,6 +46,10 @@ pub fn kill_popover() {
 }
 
 pub fn swiftbar_installed() -> bool {
+    #[cfg(test)]
+    if let Some(app) = crate::util::env_path("PULSE_TEST_SWIFTBAR_APP") {
+        return app.is_dir();
+    }
     Path::new("/Applications/SwiftBar.app").is_dir()
 }
 

@@ -202,6 +202,10 @@ pub fn tone(pct: i64) -> Tone {
 }
 
 pub fn is_macos() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = testing::MACOS.with(std::cell::Cell::get) {
+        return forced;
+    }
     cfg!(target_os = "macos")
 }
 
@@ -243,16 +247,21 @@ pub fn lib_dir() -> PathBuf {
     if let Some(d) = env_path("PULSE_LIB") {
         return d;
     }
+    lib_dir_of(env::args_os().next().map(PathBuf::from), env::current_exe().ok())
+}
+
+/// The lookup itself, from the path we were invoked by and the running executable.
+fn lib_dir_of(argv0: Option<PathBuf>, exe: Option<PathBuf>) -> PathBuf {
     let has_panel = |d: &Path| d.join("panel.html").is_file();
     let mut candidates: Vec<PathBuf> = vec![];
-    if let Some(argv0) = env::args_os().next().map(PathBuf::from) {
+    if let Some(argv0) = argv0 {
         if argv0.components().count() > 1 {
             candidates.push(if argv0.is_absolute() { argv0 } else { env::current_dir().unwrap_or_default().join(argv0) });
         } else if let Some(found) = which(&argv0.to_string_lossy()) {
             candidates.push(found);
         }
     }
-    if let Ok(exe) = env::current_exe() {
+    if let Some(exe) = exe {
         if let Ok(real) = exe.canonicalize() {
             candidates.push(real);
         }
@@ -379,7 +388,33 @@ pub fn tilde(p: &Path) -> String {
 }
 
 #[cfg(test)]
+pub mod testing {
+    //! A seam for the tests: `is_macos()` can be told what to answer, so both the macOS and
+    //! the Linux branches run on either machine.
+    use std::cell::Cell;
+
+    thread_local! {
+        pub static MACOS: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    /// `is_macos()` answers `macos` on this thread until the guard drops.
+    pub struct Os;
+
+    pub fn pretend(macos: bool) -> Os {
+        MACOS.with(|m| m.set(Some(macos)));
+        Os
+    }
+
+    impl Drop for Os {
+        fn drop(&mut self) {
+            MACOS.with(|m| m.set(None));
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::testing::pretend;
     use super::*;
 
     #[test]
@@ -426,5 +461,19 @@ mod tests {
         assert_eq!(round_half_up(15.7), 16);
         assert_eq!(round_half_up(15.5), 16);
         assert_eq!(round_half_up(15.49), 15);
+    }
+
+    #[test]
+    fn pretend_os() {
+        assert_eq!(is_macos(), cfg!(target_os = "macos"));
+        {
+            let _mac = pretend(true);
+            assert!(is_macos());
+        }
+        {
+            let _linux = pretend(false);
+            assert!(!is_macos());
+        }
+        assert_eq!(is_macos(), cfg!(target_os = "macos"));
     }
 }
