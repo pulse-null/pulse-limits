@@ -6,10 +6,11 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::activity;
 use crate::bar::{plugin_dir, waybar_dir, waybar_module, PLUGIN};
 use crate::payload::{self, PANEL_INTERVAL};
 use crate::providers::{self, bad, ok, say};
-use crate::util::{command_output, is_macos, iso_utc, local_offset, local_stamp, now, process_running, which};
+use crate::util::{command_output, is_macos, iso_utc, local_offset, local_stamp, now, process_running, short, tilde, which};
 
 pub fn run(lib: &Path, version: &str) -> i32 {
     run_on(lib, version, is_macos())
@@ -126,6 +127,15 @@ fn run_on(lib: &Path, version: &str, macos: bool) -> i32 {
         providers::doctor(p, &pstatus);
     }
     say("activity");
+    for p in &enabled {
+        match activity::source(p) {
+            Some(src) => {
+                let newest = src.newest.map(|n| format!(", newest {} ago", short(now() - n))).unwrap_or_default();
+                ok(&format!("{p}: {}, {} file{}{newest}", tilde(&src.root), src.files, if src.files == 1 { "" } else { "s" }));
+            }
+            None => ok(&format!("{p}: none")),
+        }
+    }
     ok(&b.payload.get("activity").map(Value::to_string).unwrap_or_default());
     0
 }
@@ -134,7 +144,6 @@ fn run_on(lib: &Path, version: &str, macos: bool) -> i32 {
 mod tests {
     use super::*;
     use crate::providers::testing::{capture, refused, serve, Sandbox, ENV};
-    use serde_json::json;
 
     const GROK_REPLY: &str = include_str!("../tests/fixtures/grok/fixture-200.json");
 
@@ -162,8 +171,8 @@ mod tests {
             out.contains("providers\n  PROBLEM  none enabled: pulse-limits provider claude\n  ok       CLI running now: none (the menu bar follows the first enabled one that runs)\nplugin run\n  ok       menu bar shows: nothing\nactivity\n"),
             "{out}"
         );
-        assert!(out.ends_with(&format!("activity\n  ok       {}\n", json!({"tok_per_min": 0, "idle_s": 86400 * 365, "sessions": 0}))), "{out}");
-        // every file in place, the plugin linked, two providers enabled: one with a login and a live reply, one without
+        assert!(out.ends_with("activity\n  ok       null\n"), "{out}"); // nothing enabled: no reading on top
+                                                                        // every file in place, the plugin linked, two providers enabled: one with a login and a live reply, one without
         for f in [PLUGIN, "panel.html", "bin/pulse-limits", "bin/pulse-popover", "bin/pulse-menubar"] {
             crate::util::write_atomic(&lib.join(f), b"x").unwrap();
         }
@@ -189,13 +198,20 @@ mod tests {
         assert!(out.contains("provider grok\n  ok       GROK_HOME="), "{out}");
         assert!(out.contains("provider codex\n  ok       CODEX_HOME="), "{out}");
         assert!(out.contains("  ok       reached through the plugin (not probed again: keep the calls rare)\n"), "{out}");
-        // the plugin file gone: a dangling link
+        assert!(out.ends_with("activity\n  ok       grok: none\n  ok       codex: none\n  ok       null\n"), "{out}");
+        // the plugin file gone: a dangling link; grok's session logs appear: where, how many, how fresh, and the reading on top
         std::fs::remove_file(lib.join(PLUGIN)).unwrap();
         std::env::set_var("GROK_CLI_CHAT_PROXY_BASE_URL", refused());
+        let session = grok.join("sessions").join("cwd").join("s1");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("updates.jsonl"), "").unwrap();
         let out = capture(|| {
             run(&lib, "vTEST");
         });
         assert!(out.contains("  PROBLEM  pulse-limits.1m.sh missing"), "{out}");
+        assert!(out.contains("activity\n  ok       grok: ~/.grok/sessions, 1 file, newest "), "{out}");
+        assert!(out.contains("S ago\n  ok       codex: none\n  ok       {\"tok_per_min\":0,\"idle_s\":"), "{out}");
+        assert!(out.ends_with(",\"sessions\":1}\n"), "{out}");
         if is_macos() {
             assert!(out.contains(&format!("  PROBLEM  plugin link is dangling: {}\n", link.display())), "{out}");
         }
