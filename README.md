@@ -385,6 +385,17 @@ does not even ask) and the monitor turns amber with `TOKEN EXPIRED`. Open the
 CLI once and it heals. Refreshing a token from here is deliberately not done:
 rotating it behind the CLI's back could log the CLI out.
 
+**Grok.** `pulse-limits provider grok` adds the Grok CLI. Its login lives in
+`~/.grok/auth.json` (`GROK_HOME` moves it), and the numbers come from the call the CLI
+itself makes for its quota, `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`,
+plus `/settings` about once an hour for the plan name (`X PREMIUM+`, `SUPERGROK`,
+`SUPERGROK HEAVY`). Grok has one limit, a weekly credit pool: it is shown as `WEEK` and,
+having no session window, takes the menu bar slot; an on-demand cap appears as
+`ONDEMAND`. The CLI's token lives six hours and only the CLI refreshes it, so after a
+quiet evening the monitor says `TOKEN EXPIRED` until you open `grok` once. The token is
+never refreshed from here and the `grok` binary is never run: a run may self-update,
+sync its config, or rewrite the login.
+
 ## Privacy
 
 - Tokens are read on each run (the Keychain or the credentials file for Claude,

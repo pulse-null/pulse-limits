@@ -32,7 +32,7 @@ const HELP: &str = "pulse-limits: your Claude and Codex plan limits as a retro p
   pulse-limits uninstall     remove the bar item, drop cache and settings
   pulse-limits bar on|off|status  the bar item alone: link it, unlink it, or say whether it is
   pulse-limits theme NAME    crt | modern | cyber | synth | analog
-  pulse-limits provider NAME enable or disable a provider: claude | codex
+  pulse-limits provider NAME enable or disable a provider: claude | codex | grok
   pulse-limits refresh       force a live fetch now
   pulse-limits open          show or hide the monitor
   pulse-limits tui [NAME]    the monitor in the terminal (q quits; `pulse-limits claude` / `codex` are the same)
@@ -139,7 +139,7 @@ fn main() {
         }
         "update" => bar::update(&lib, VERSION),
         "tui" => tui::run(&args[1..]),
-        "claude" | "codex" => tui::run(&args),
+        "claude" | "codex" | "grok" => tui::run(&args),
         "help" | "-h" | "--help" => {
             println!("{HELP}");
             0
