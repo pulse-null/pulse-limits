@@ -94,9 +94,9 @@ git clone https://github.com/dnacenta/pulse-limits.git
 cd pulse-limits && ./build.sh && ./pulse-limits install
 ```
 
-`./build.sh` compiles the two small Swift helpers (about ten seconds). Every path
-is safe to re-run. Update with `pulse-limits update`, remove with
-`pulse-limits uninstall`.
+`./build.sh` compiles the two small Swift helpers (about ten seconds) and, when
+cargo is installed, the terminal UI. Every path is safe to re-run. Update with
+`pulse-limits update`, remove with `pulse-limits uninstall`.
 
 ## The `pulse-limits` command
 
@@ -106,15 +106,66 @@ pulse-limits uninstall     unlink it, drop cache and settings
 pulse-limits theme NAME    crt | modern | cyber | synth | analog
 pulse-limits refresh       force a live fetch now
 pulse-limits open          show or hide the monitor
+pulse-limits tui [claude]  the monitor in the terminal (pulse-limits claude is the same)
 pulse-limits status        print the current reading as JSON
 pulse-limits doctor        check every link of the chain
 pulse-limits update        update to the latest release
 pulse-limits keychain NAME pin the Keychain entry holding the login
 ```
 
+## Terminal UI
+
+The same monitor in a terminal, for a tmux pane or a tile in a tiling window
+manager. It is a small Rust program (`tui/`, built on ratatui). Every five
+seconds it reads the payload the plugin last packed for the panel
+(`~/.cache/pulse-limits/panel.url`, refreshed by the menu bar every minute), every
+two minutes it runs the plugin itself as the popover does, which is what feeds a
+box with no menu bar, and every two seconds it asks the activity helper. So it
+shows what the panel shows: the heartbeat, the session number and its reset, the
+other windows as bars, twelve hours of trend. It never talks to the network
+itself, and the plugin keeps its own API throttle.
+
+```sh
+pulse-limits tui                 # or: pulse-limits claude
+pulse-limits tui --theme synth
+```
+
+```
+  PULSE LIMITS                                        MAX 20X  ● LIVE
+  ───────────────────────────────────────────────────────────────────
+  ● 2.4K TOK/MIN · 3 SESSIONS                                 SESSION
+      ⢠⡄         ⣀          ⣤                            ███ ███ █ █
+      ⢸⡇         ⣿         ⢀⣿                            █     █   █
+    ⣀⣀⡼⡇⣰⠲⣄    ⣀⡀⡿⣄⡴⢲⡀   ⢀⣀⣸⢸⢠⠖⢦                         ███ ███  █
+  ⠉⠉⠉⠁⠈⠁⠿⠁ ⠈⠉⠉⠉⠉⠁⠉⠁⠉  ⠉⠉⠉⠉⠉ ⠉⠘⠋ ⠈⠉⠉  ⠈⠉⠉⠉⠉⠉                █ █   █ █
+                                                         ███ ███ █ █
+  ██████████████████████████████░░░░░░░░░░░░░░░   RESET 2H 13M · EST
+
+  WEEK   ███████████████░░░░░░░░░░░░░░░░░░░░░░   42%  RESET 4D 07H
+  FABLE  ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   12%  RESET 4D 07H
+
+  SESSION · 12H
+  ····················▁▁▁▂▂▂▃▃▃▄▄▄▅▅▆▆▆▇▇█████·····▁▁▂▂▃▃▄▄▅▅▆▆
+  -12H                                                          NOW
+
+  UPDATED 27S AGO · NEXT RESET 18:40    q quit  t theme  r reload  ? help
+```
+
+Keys: `q` quit, `t` next theme (crt, modern, cyber, synth, analog; it starts
+on the panel's), `r` re-read now (it runs the plugin only when the panel's file
+is older than two minutes), `?` help. Colour follows the percentage as in
+the panel: green below 60 %, amber below 85 %, red above. Truecolor terminals get
+the panel's palettes, others the 16 ANSI colours. It degrades down to about
+40x12 and looks best from 90x28 up; the trace is braille, so the terminal font
+needs those glyphs (most do).
+
+`./build.sh` builds it when cargo is installed ([rustup.rs](https://rustup.rs));
+Homebrew builds it as part of the formula. Without it, `pulse-limits tui` says so.
+
 ## How it works
 
-Everything is a Bash script, one HTML file, and two tiny Swift programs.
+Everything is a Bash script, one HTML file, two tiny Swift programs, and one
+small Rust one for the terminal.
 
 1. **Credentials.** `security find-generic-password -s "Claude Code-credentials"`
    reads the OAuth token Claude Code stores in your Keychain. The same item
