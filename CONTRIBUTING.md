@@ -12,8 +12,10 @@ as `feat/<name>` or `fix/<name>` and open a pull request.
 
 ## Ground rules
 
-1. Tokens come from the vendor CLI's own credential store. Never refreshed, never
-   written, never printed. `doctor` stays token-free.
+1. Tokens come from the vendor CLI's own credential store. Never printed, never sent
+   anywhere but the vendor's own endpoints. The one write is Grok's refresh, done the way
+   its CLI does it, only while the CLI is closed, atomically, never deleting the file.
+   `doctor` stays token-free.
 2. The vendor CLIs are never spawned. Grok's self-updates and can delete its login.
    Read their files; do not run them.
 3. Nothing leaves the machine except the GET requests to the usage endpoints. No

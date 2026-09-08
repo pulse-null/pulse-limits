@@ -129,7 +129,8 @@ Plumbing, for scripts: `waybar`, `swiftbar`, `payload`, `activity`, `estimate PC
 `pulse-limits doctor`: it checks every link per provider without printing tokens.
 
 - **No login on this machine**: run `grok login`, `claude` or `codex login` once.
-- **Token expired**: open that CLI once; it refreshes its own token.
+- **Token expired**: open that CLI once; it refreshes its own token. Grok's is also
+  refreshed by pulse-limits itself while the CLI is closed.
 - **Rate limited**: the usage endpoints have small per-account quotas, shared by every
   machine on the account; the binary backs off and keeps the last reading.
 
