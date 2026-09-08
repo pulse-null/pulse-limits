@@ -1065,10 +1065,7 @@ mod tests {
             "productUsage":[{"product":"GrokBuild","usagePercent":-3}, "junk", {"usagePercent":7}]}}"#);
         assert_eq!(
             rows(&windows(&c, CAPTURED)),
-            vec![
-                ("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())),
-                ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into()))
-            ]
+            vec![("WEEK".into(), "100".into(), Some("2026-09-14T17:30:18Z".into())), ("ONDEMAND".into(), "100".into(), Some("2026-09-14T17:30:18Z".into()))]
         );
         // no type: the label from the span; both stamp forms parse to the same instant
         let c = v(r#"{"config":{"currentPeriod":{"start":"2026-09-07T17:30:18.071364+00:00","end":"2026-09-14T17:30:18Z"},"creditUsagePercent":5}}"#);
