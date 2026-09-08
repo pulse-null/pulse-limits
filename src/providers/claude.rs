@@ -507,4 +507,57 @@ mod tests {
         assert!(out.contains("{\"kind\":\"weekly_scoped\",\"percent\":30,\"model\":\"Fable\"}"), "{out}");
         drop(s);
     }
+
+    #[test]
+    fn limits_of_other_shapes() {
+        for (text, ok) in [
+            (r#"{"limits":{"a":1}}"#, true),
+            (r#"{"limits":{}}"#, false),
+            (r#"{"limits":"x"}"#, true),
+            (r#"{"limits":""}"#, false),
+            (r#"{"limits":1}"#, true),
+            (r#"{"limits":0}"#, false),
+            (r#"{"limits":false}"#, false),
+        ] {
+            assert_eq!(reply_ok(&v(text)), ok, "{text}");
+        }
+    }
+
+    /// The Keychain answering: `security` stands in as grep, so `find-generic-password -s
+    /// SERVICE -w` prints the line of the file SERVICE names that has that word in it. The
+    /// pinned service is such a file, one JSON line long; the default service is no file.
+    #[test]
+    fn doctor_reads_a_keychain_login() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Sandbox::new("claude-doc-keychain");
+        s.shim("security", "grep");
+        let item = s.home().join("item.json");
+        std::fs::write(
+            &item,
+            "{\"claudeAiOauth\":{\"accessToken\":\"keychain-token\",\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_max_20x\",\"expiresAt\":4102444800000},\"note\":\"find-generic-password\"}\n",
+        )
+        .unwrap();
+        crate::util::write_atomic(&crate::util::config_dir().join("keychain"), format!("{}\n", item.display()).as_bytes()).unwrap();
+        let out = capture(|| doctor(""));
+        if is_macos() {
+            assert!(
+                out.contains(&format!(
+                    "  ok       Keychain '{}' / account '': claude.ai login, plan max, tier default_claude_max_20x, expires 2100-01-01T00:00:00Z\n",
+                    item.display()
+                )),
+                "{out}"
+            );
+            assert!(out.contains("  PROBLEM  Keychain 'Claude Code-credentials' / account '': listed but not readable from here\n"), "{out}");
+            assert!(out.contains("  ok       2 Keychain item(s) mention Claude\n"), "{out}");
+            assert!(out.contains("  usage api\n  ok       reached through the plugin"), "{out}");
+        }
+        // the same item without a login in it
+        std::fs::write(&item, "{\"other\":1,\"note\":\"find-generic-password\"}\n").unwrap();
+        let out = capture(|| doctor(""));
+        if is_macos() {
+            assert!(out.contains(&format!("  PROBLEM  Keychain '{}' / account '': no claude.ai login in it (keys: other,note)\n", item.display())), "{out}");
+            assert!(out.contains("  PROBLEM  skipped (no token)\n"), "{out}");
+        }
+        drop(s);
+    }
 }
