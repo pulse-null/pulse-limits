@@ -5,7 +5,9 @@ TLS, only to the vendors' own usage endpoints. Anything that weakens that is a s
 bug: a token in any output, a write to a credential store, a request to any other host,
 a spawned vendor CLI.
 
-Report it privately with "Report a vulnerability" under this repository's Security tab.
+Report it privately at
+<https://github.com/pulse-null/pulse-limits/security/advisories/new> ("Report a vulnerability"
+under the repository's Security tab, the one beside Issues and Pull requests).
 Do not open a public issue. Expect a reply within a few days; a fix ships as a patch
 release and the report is credited unless you ask otherwise.
 
