@@ -315,12 +315,12 @@ pub fn fetch(st: &mut Store, url: &str, token: &str) {
     }
 }
 
-/// The prepaid balance as the credits caption. `used` and `currency` are what the panel, the
-/// tooltip and the TUI print ("CREDITS 1097.00 PREPAID"); `balance` is the honest name: credits
-/// bought, not spend, so never a percentage. Null without one; the on-demand cap is a ring instead.
+/// The prepaid balance as the credits caption, "PREPAID 10.97" (the API counts cents and names no
+/// currency): credits bought, not spend, so never a percentage. Null without one; the on-demand
+/// cap is a ring instead.
 pub fn credits(c: &Value) -> Value {
     match c.get("config").and_then(|c| c.get("prepaidBalance")).and_then(|m| m.get("val")).filter(|v| v.as_f64().is_some_and(|b| b > 0.0)) {
-        Some(balance) => json!({ "used": balance, "currency": "PREPAID", "balance": balance }),
+        Some(balance) => json!({ "label": "PREPAID", "used": balance.as_f64().unwrap_or(0.0) / 100.0, "currency": "" }),
         None => Value::Null,
     }
 }
@@ -1201,7 +1201,7 @@ mod tests {
         let d = run(270);
         assert_eq!((d.provider.as_str(), d.status.as_str(), d.hint.as_str(), d.source.as_str(), d.plan.as_str()), ("grok", "", "", "LIVE", "X PREMIUM+"));
         assert_eq!(rows(&d.windows), vec![("WEEK".into(), "1.0".into(), Some(RESET.into()))]);
-        assert_eq!(d.credits, json!({ "used": 1097, "currency": "PREPAID", "balance": 1097 })); // the prepaid balance, never a ring
+        assert_eq!(d.credits, json!({ "label": "PREPAID", "used": 10.97, "currency": "" })); // the prepaid balance, never a ring
         assert_eq!(d.session().unwrap().label, "WEEK"); // no SESSION window: the first one is the bar's number
         assert_eq!(std::fs::read_to_string(s.cache().join("plan-grok")).unwrap(), "X PREMIUM+\n");
         assert!(s.cache().join("usage-grok.json").is_file());
@@ -1351,7 +1351,7 @@ mod tests {
         // the real reply: cap 0 and a balance of 1097 -> no ONDEMAND ring, the balance as the caption
         let c = v(REPLY);
         assert_eq!(rows(&windows(&c, CAPTURED)).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["WEEK"]);
-        assert_eq!(credits(&c), json!({ "used": 1097, "currency": "PREPAID", "balance": 1097 }));
+        assert_eq!(credits(&c), json!({ "label": "PREPAID", "used": 10.97, "currency": "" }));
         // a cap: the ring at used/cap, and a balance of 0 is no caption
         let c = v(CAPPED);
         assert_eq!(
@@ -1368,7 +1368,7 @@ mod tests {
             r#"{"config":{"creditUsagePercent":3,"billingPeriodEnd":"2099-01-08T00:00:00Z","onDemandCap":{"val":100},"onDemandUsed":{"val":10},"prepaidBalance":{"val":12.5}}}"#,
         );
         assert_eq!(rows(&windows(&c, CAPTURED)).len(), 2);
-        assert_eq!(credits(&c), json!({ "used": 12.5, "currency": "PREPAID", "balance": 12.5 }));
+        assert_eq!(credits(&c), json!({ "label": "PREPAID", "used": 0.125, "currency": "" }));
         // shapes that carry no balance
         for text in
             [r#"{"config":{"prepaidBalance":{"val":-5}}}"#, r#"{"config":{"prepaidBalance":{"val":"1097"}}}"#, r#"{"config":{"prepaidBalance":7}}"#, "{}"]

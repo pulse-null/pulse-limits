@@ -43,7 +43,13 @@ pub fn render(b: &Built) -> String {
         tip.push_str(&format!("\n{}", row(&name(&a, w), round_half_up(w.pct_f()), w.resets.as_deref(), now, width)));
     }
     if let Some(c) = b.payload.get("credits").filter(|c| c.is_object()) {
-        tip.push_str(&format!("\nEXTRA    {} {}", c["used"], c["currency"].as_str().unwrap_or("")));
+        let cur = c["currency"].as_str().unwrap_or("");
+        tip.push_str(&format!(
+            "\n{} {:.2}{}{cur}",
+            c["label"].as_str().unwrap_or("CREDITS"),
+            c["used"].as_f64().unwrap_or(0.0),
+            if cur.is_empty() { "" } else { " " }
+        ));
     }
     // the other enabled providers, as the macOS menu lists them
     for d in b.docs.iter().filter(|d| b.enabled.contains(&d.provider) && d.provider != b.active) {
@@ -123,7 +129,7 @@ mod tests {
         assert_eq!(v["text"], "17%");
         assert_eq!(v["class"], "ok");
         assert_eq!(v["percentage"], 17);
-        assert_eq!(v["tooltip"], "PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nEXTRA    1.5 EUR\n8.1K TOK/MIN · 4 SESSIONS\nUPDATED 1M AGO · CACHE");
+        assert_eq!(v["tooltip"], "PULSE LIMITS  ·  MAX 20X\nSESSION  ███░░░░░░░░░░░░░░░░░  17%   RESETS IN ?\nWEEK     ████████░░░░░░░░░░░░  42%   RESETS IN ?\nCREDITS 1.50 EUR\n8.1K TOK/MIN · 4 SESSIONS\nUPDATED 1M AGO · CACHE");
         assert!(render(&b).starts_with("{\"text\":\"17%\",\"tooltip\":\"PULSE LIMITS"));
         let mut stale = d.clone();
         stale.status = "TOKEN EXPIRED".into();

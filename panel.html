@@ -386,7 +386,7 @@
     if (D.status && alive) px('? ' + D.status + ' · LAST GOOD ' + short(ageSec()) + ' AGO', 14, fy, 1, Math.floor(t / 600) % 2 ? C.red : C.amber);
     else if (alive) px('UPDATED ' + short(ageSec()) + ' AGO · NEXT RESET ' + nextReset(), 14, fy, 1, C.dim);
     else if (D.hint) px(D.hint, 14, fy, 1, C.dim);
-    if (D.credits) { const c = 'CREDITS ' + Number(D.credits.used).toFixed(2) + ' ' + D.credits.currency; px(c, W - 14 - tw(c, 1), fy, 1, C.amber); }
+    if (D.credits) { const c = (D.credits.label || 'CREDITS') + ' ' + Number(D.credits.used).toFixed(2) + (D.credits.currency ? ' ' + D.credits.currency : ''); px(c, W - 14 - tw(c, 1), fy, 1, C.amber); }
   }};
 
   // ---- 2. MODERN: a macOS widget ----------------------------------------------------
@@ -458,7 +458,7 @@
     const n = Math.floor((tw0 - 24) / 5);
     trendBars(tx + 12, ry + rh - 14, n, 3, 2, 48, tone, P.line, 1.5);
     txt(alive ? 'Updated ' + short(ageSec()).toLowerCase() + ' ago · next reset ' + nextReset() : (D.hint || '').toLowerCase(), 16, H - 8, '400 10px ' + SF, P.sub);
-    if (D.credits) txt('Credits ' + Number(D.credits.used).toFixed(2) + ' ' + D.credits.currency, W - 16, H - 8, '500 10px ' + SF, P.amber, 'right');
+    if (D.credits) { const l = D.credits.label ? D.credits.label.charAt(0) + D.credits.label.slice(1).toLowerCase() : 'Credits'; txt(l + ' ' + Number(D.credits.used).toFixed(2) + (D.credits.currency ? ' ' + D.credits.currency : ''), W - 16, H - 8, '500 10px ' + SF, P.amber, 'right'); }
   }};
 
   // ---- 3. CYBER: neon HUD ----------------------------------------------------------------
