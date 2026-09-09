@@ -100,9 +100,8 @@ mod tests {
         fs::write(&pidfile, "abc").unwrap();
         assert_eq!(open(&lib), 0);
         assert_eq!(calls(&open_log).len(), 3);
-        let mut gone = Command::new("/bin/sh").arg("-c").arg("exit 0").spawn().unwrap();
-        gone.wait().unwrap();
-        fs::write(&pidfile, gone.id().to_string()).unwrap();
+        // a pid past the kernel's range: dead for sure, and never reused by another test's child
+        fs::write(&pidfile, i32::MAX.to_string()).unwrap();
         assert_eq!(open(&lib), 0);
         assert_eq!(calls(&open_log).len(), 4);
         // the helper is built: launched detached with the popover size
