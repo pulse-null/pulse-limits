@@ -44,7 +44,12 @@ pub fn render(b: &Built) -> String {
     }
     if let Some(c) = b.payload.get("credits").filter(|c| c.is_object()) {
         let cur = c["currency"].as_str().unwrap_or("");
-        tip.push_str(&format!("\n{} {:.2}{}{cur}", c["label"].as_str().unwrap_or("CREDITS"), c["used"].as_f64().unwrap_or(0.0), if cur.is_empty() { "" } else { " " }));
+        tip.push_str(&format!(
+            "\n{} {:.2}{}{cur}",
+            c["label"].as_str().unwrap_or("CREDITS"),
+            c["used"].as_f64().unwrap_or(0.0),
+            if cur.is_empty() { "" } else { " " }
+        ));
     }
     // the other enabled providers, as the macOS menu lists them
     for d in b.docs.iter().filter(|d| b.enabled.contains(&d.provider) && d.provider != b.active) {
