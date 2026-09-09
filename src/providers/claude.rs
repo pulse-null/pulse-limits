@@ -86,13 +86,15 @@ pub fn windows(c: &Value) -> Vec<Window> {
     out
 }
 
-/// Extra-usage spend, shown as CREDITS when enabled and non-zero.
+/// Extra-usage spend (the API counts cents), shown as EXTRA USAGE when enabled and non-zero.
 pub fn credits(c: &Value) -> Value {
     let e = c.get("extra_usage");
     let enabled = e.and_then(|e| e.get("is_enabled")) == Some(&Value::Bool(true));
     let used = e.and_then(|e| present(e.get("used_credits")));
     match (enabled, used) {
-        (true, Some(u)) if u.as_f64().unwrap_or(0.0) > 0.0 => json!({ "used": u, "currency": string(e.and_then(|e| e.get("currency"))).unwrap_or_default() }),
+        (true, Some(u)) if u.as_f64().unwrap_or(0.0) > 0.0 => {
+            json!({ "label": "EXTRA USAGE", "used": u.as_f64().unwrap_or(0.0) / 100.0, "currency": string(e.and_then(|e| e.get("currency"))).unwrap_or_default() })
+        }
         _ => Value::Null,
     }
 }
@@ -280,7 +282,7 @@ mod tests {
 
     const LEGACY: &str = r#"{"five_hour":{"utilization":28.0,"resets_at":"2026-09-08T13:40:00.300893+00:00"},
         "seven_day":{"utilization":12.0,"resets_at":"2026-09-09T06:00:00.300975+00:00"},
-        "extra_usage":{"is_enabled":true,"used_credits":1.5,"currency":"EUR"}}"#;
+        "extra_usage":{"is_enabled":true,"used_credits":150,"currency":"EUR"}}"#;
     const LIMITS: &str = r#"{"five_hour":null,"seven_day":null,
         "limits":[{"kind":"session","percent":13,"resets_at":"2026-09-08T18:30:00Z","scope":null},
                   {"kind":"weekly_all","percent":17,"resets_at":"2026-09-09T06:00:00Z"},
@@ -301,7 +303,7 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert_eq!((w[0].label.as_str(), w[0].pct.to_string().as_str(), w[0].resets.as_deref()), ("SESSION", "28.0", Some("2026-09-08T13:40:00.300893+00:00")));
         assert_eq!((w[1].label.as_str(), w[1].pct.to_string().as_str()), ("WEEK", "12.0"));
-        assert_eq!(credits(&v(LEGACY)), json!({ "used": 1.5, "currency": "EUR" }));
+        assert_eq!(credits(&v(LEGACY)), json!({ "label": "EXTRA USAGE", "used": 1.5, "currency": "EUR" }));
         assert!(reply_ok(&v(LEGACY)));
     }
 
@@ -424,7 +426,7 @@ mod tests {
         // the legacy shape carries credits
         std::env::set_var("PULSE_CLAUDE_USAGE_URL", serve(200, LEGACY));
         let d = run(-1);
-        assert_eq!((d.windows.len(), d.credits), (2, json!({ "used": 1.5, "currency": "EUR" })));
+        assert_eq!((d.windows.len(), d.credits), (2, json!({ "label": "EXTRA USAGE", "used": 1.5, "currency": "EUR" })));
         // a file without a token
         std::fs::write(&f, r#"{"claudeAiOauth":{"accessToken":"","subscriptionType":"pro"}}"#).unwrap();
         let d = run(-1);

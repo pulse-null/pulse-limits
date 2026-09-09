@@ -1046,7 +1046,7 @@ fn render(f: &mut Frame, app: &App, l: &Layout, t: f64) {
     let credits = app
         .d
         .get("credits")
-        .and_then(|c| Some(format!("CREDITS {:.2} {}", c.get("used")?.as_f64()?, c.get("currency").and_then(Value::as_str).unwrap_or(""))))
+        .and_then(|c| Some(format!("{} {:.2} {}", c.get("label").and_then(Value::as_str).unwrap_or("CREDITS"), c.get("used")?.as_f64()?, c.get("currency").and_then(Value::as_str).unwrap_or(""))))
         .map(|s| s.trim_end().to_string());
     if let Some(c) = credits {
         if (w as usize) >= 2 * m as usize + left_w + 2 + c.len() {
